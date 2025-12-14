@@ -80,6 +80,7 @@ class VocabEntry:
     kanji_on: str = ""                 # On-yomi  
     kanji_tu_ghep: str = ""            # Compound words HTML
     kanji_chi_tiet: str = ""           # Etymology explanation
+    frequency_info: str = ""           # Frequency tier [S #8]
     
     def generate_takoboto_link(self):
         """Generate Takoboto dictionary link"""
@@ -585,17 +586,54 @@ class RadicalDB:
         return {}
 
 
+class KanjiFrequencyDB:
+    """Kanji frequency database - loads from JSON"""
+    
+    FREQ: Dict[str, Dict] = {}
+    _loaded = False
+    
+    @classmethod
+    def _load(cls):
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "kanji_frequency.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                cls.FREQ = json.load(f)
+        cls._loaded = True
+    
+    @classmethod
+    def get_frequency(cls, kanji: str) -> Dict:
+        """Get frequency info for a kanji. Returns {'rank': int, 'tier': str}"""
+        cls._load()
+        return cls.FREQ.get(kanji, {})
+    
+    @classmethod
+    def get_word_frequency(cls, word: str) -> Dict:
+        """Get frequency info for first kanji in word with frequency data"""
+        cls._load()
+        for char in word:
+            if char in cls.FREQ:
+                return {**cls.FREQ[char], 'kanji': char}
+        return {}
+
+
 class ExampleSentencesDB:
-    """Example sentences database - loads from JSON"""
+    """Example sentences database - loads from JSON with API fallback"""
     
     SENTENCES: Dict[str, List[List[str]]] = {}
     _loaded = False
+    _cache_dir: Path = None
     
     @classmethod
     def _load(cls):
         """Load sentences from JSON"""
         if cls._loaded:
             return
+        
+        cls._cache_dir = Path(__file__).parent / "data" / "examples_cache"
+        cls._cache_dir.mkdir(exist_ok=True)
         
         json_path = Path(__file__).parent / "data" / "example_sentences.json"
         if json_path.exists():
@@ -615,6 +653,48 @@ class ExampleSentencesDB:
             # Format: "日本語 → Tiếng Việt"
             return [f"{jp} → {vi}" for jp, vi in examples]
         
+        # Check cache
+        cache_file = cls._cache_dir / f"{hash(word) & 0xFFFFFFFF}.json"
+        if cache_file and cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                    return cached[:limit]
+            except:
+                pass
+        
+        # Fetch from Tatoeba API
+        examples = cls._fetch_tatoeba(word, limit)
+        
+        # Save to cache
+        if examples and cache_file:
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump(examples, f, ensure_ascii=False)
+            except:
+                pass
+        
+        return examples
+    
+    @classmethod
+    def _fetch_tatoeba(cls, word: str, limit: int = 2) -> List[str]:
+        """Fetch examples from Tatoeba API"""
+        try:
+            url = f"https://tatoeba.org/en/api_v0/search?from=jpn&to=vie&query={urllib.parse.quote(word)}&limit={limit}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for item in data.get('results', [])[:limit]:
+                    jp = item.get('text', '')
+                    translations = item.get('translations', [[]])
+                    if translations and translations[0]:
+                        vi = translations[0][0].get('text', '')
+                        if jp and vi:
+                            results.append(f"{jp} → {vi}")
+                return results
+        except:
+            pass
         return []
 
 
@@ -859,6 +939,24 @@ class AnkiDeckGenerator:
     color: #ce93d8;
 }
 
+/* Frequency tier badges */
+.frequency-info {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin: 5px 0;
+}
+
+.freq-S { background: #e74c3c; color: white; }
+.freq-A { background: #e67e22; color: white; }
+.freq-B { background: #f1c40f; color: #333; }
+.freq-C { background: #27ae60; color: white; }
+.freq-D { background: #95a5a6; color: white; }
+
+.night_mode .freq-B { color: #1a1a1a; }
+
 .tags {
     font-size: 12px;
     color: #bdc3c7;
@@ -889,14 +987,15 @@ hr {
 }
 '''
         
-        # Front template (Question)
+        # Front template (Question) - pitch ở đây để học phát âm
         front_template = '''
 <div class="word">{{Word}}</div>
-{{#Reading}}<div class="reading">{{Reading}}</div>{{/Reading}}
+{{#FrequencyInfo}}<div class="frequency-info">{{FrequencyInfo}}</div>{{/FrequencyInfo}}
+{{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
 {{#Audio}}{{Audio}}{{/Audio}}
 '''
         
-        # Back template (Answer) - reading hiện trong pitch diagram nên bỏ trùng
+        # Back template (Answer)
         back_template = '''
 <div class="word">{{Word}}</div>
 <div class="romaji">{{Romaji}}</div>
@@ -908,11 +1007,6 @@ hr {
 <div class="meaning meaning-vi">🇻🇳 {{MeaningVI}}</div>
 {{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
 {{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
-
-{{#PitchDiagram}}
-<hr>
-<div class="pitch-diagram">{{PitchDiagram}}</div>
-{{/PitchDiagram}}
 
 {{#StrokeOrder}}
 <hr>
@@ -963,6 +1057,7 @@ hr {
                 {'name': 'Audio'},
                 {'name': 'Examples'},
                 {'name': 'RadicalInfo'},
+                {'name': 'FrequencyInfo'},
                 {'name': 'KanjiPinyin'},
                 {'name': 'KanjiKun'},
                 {'name': 'KanjiOn'},
@@ -1006,6 +1101,7 @@ hr {
                 f'[sound:{Path(entry.audio_file).name}]' if entry.audio_file else '',
                 entry.examples,
                 entry.radical_info,
+                entry.frequency_info,
                 entry.kanji_pinyin,
                 entry.kanji_kun,
                 entry.kanji_on,
@@ -1250,6 +1346,14 @@ class JapaneseVocabPipeline:
             if radical_info:
                 entry.radical_info = f"{radical_info.get('radical', char)} ({radical_info.get('name_vn', '')} - {radical_info.get('name_en', '')})"
                 break
+        
+        # Frequency info
+        freq_info = KanjiFrequencyDB.get_word_frequency(entry.word)
+        if freq_info:
+            tier = freq_info['tier']
+            rank = freq_info['rank']
+            kanji = freq_info['kanji']
+            entry.frequency_info = f'<span class="freq-{tier}">{kanji} [{tier} #{rank}]</span>'
         
         # Example sentences (O(1) lookup)
         examples = ExampleSentencesDB.get_examples(entry.word, limit=2)
