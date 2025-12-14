@@ -41,13 +41,11 @@ pip install -r requirements.txt --break-system-packages
 ## 🚀 Sử dụng
 
 ### Quick Start
-
 ```bash
 ./run.sh <đường_dẫn_epub> [thư_mục_output]
 ```
 
 ### Manual
-
 ```bash
 # Full mode (chậm, có audio + English)
 python3 main.py sach.epub -o ./output
@@ -61,13 +59,13 @@ python3 main.py --help
 
 ### Options
 
-| Flag           | Mô tả                               |
-| -------------- | ----------------------------------- |
+| Flag | Mô tả |
+|------|-------|
 | `--no-english` | Bỏ qua lookup tiếng Anh (nhanh hơn) |
-| `--no-audio`   | Không generate audio                |
-| `--no-pitch`   | Không generate pitch diagram        |
-| `--no-stroke`  | Không generate stroke order         |
-| `--delay N`    | Delay giữa API calls (giây)         |
+| `--no-audio` | Không generate audio |
+| `--no-pitch` | Không generate pitch diagram |
+| `--no-stroke` | Không generate stroke order |
+| `--delay N` | Delay giữa API calls (giây) |
 
 ## 📊 Output
 
@@ -84,7 +82,6 @@ output/
 ## 🎴 Card Format
 
 ### Front (Question)
-
 ```
 ┌─────────────────────┐
 │        犬           │
@@ -94,7 +91,6 @@ output/
 ```
 
 ### Back (Answer)
-
 ```
 ┌─────────────────────┐
 │        犬           │
@@ -117,21 +113,21 @@ output/
 
 ## 🔌 APIs Used
 
-| Source     | Data                             |
-| ---------- | -------------------------------- |
-| Jisho.org  | English meanings                 |
-| KanjiVG    | Stroke order SVG                 |
-| gTTS       | Audio synthesis                  |
+| Source | Data |
+|--------|------|
+| Jisho.org | English meanings |
+| KanjiVG | Stroke order SVG |
+| gTTS | Audio synthesis |
 | Offline DB | Pitch accent, Hán Việt, Radicals |
 
 ## 📝 Pitch Accent Legend
 
-| Pattern | Name               | Example |
-| ------- | ------------------ | ------- |
-| 0       | 平板型 (Heiban)    | 水 みず |
-| 1       | 頭高型 (Atamadaka) | 猫 ねこ |
-| 2-n     | 中高型 (Nakadaka)  | 犬 いぬ |
-| n       | 尾高型 (Odaka)     | 山 やま |
+| Pattern | Name | Example |
+|---------|------|---------|
+| 0 | 平板型 (Heiban) | 水 みず |
+| 1 | 頭高型 (Atamadaka) | 猫 ねこ |
+| 2-n | 中高型 (Nakadaka) | 犬 いぬ |
+| n | 尾高型 (Odaka) | 山 やま |
 
 ## 🗂 Files
 
@@ -155,15 +151,12 @@ japanese_anki/
 ## 🔄 Mở rộng
 
 ### Thêm nguồn pitch accent
-
 Edit `pitch_accent.py` → class `OfflinePitchDB.DATABASE`
 
 ### Thêm Hán Việt
-
 Edit `main.py` → class `HanVietDB.HANVIET_MAP`
 
 ### Thêm bộ thủ
-
 Edit `main.py` → class `RadicalDB.RADICALS`
 
 ## 📜 License

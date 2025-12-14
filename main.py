@@ -18,13 +18,11 @@ import os
 import sys
 import json
 import hashlib
-import sqlite3
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Any
 import re
 import zipfile
-from html.parser import HTMLParser
 import urllib.request
 import urllib.parse
 import time
@@ -125,10 +123,12 @@ class EPUBVocabParser:
         for element in soup.find_all(['h2', 'div']):
             if element.name == 'h2':
                 current_subcategory = element.get_text().strip()
-            elif element.name == 'div' and 'l_outer' in element.get('class', []):
-                entry = self._parse_vocab_entry(element, chapter_name, current_subcategory)
-                if entry:
-                    entries.append(entry)
+            elif element.name == 'div':
+                classes = element.get('class') or []
+                if 'l_outer' in classes:
+                    entry = self._parse_vocab_entry(element, chapter_name, current_subcategory)
+                    if entry:
+                        entries.append(entry)
         
         if entries:
             self.chapters[chapter_name] = entries
@@ -442,190 +442,30 @@ class TTSGenerator:
 # =============================================================================
 
 class HanVietDB:
-    """Sino-Vietnamese reading database"""
+    """Sino-Vietnamese reading database - loads from JSON"""
     
-    # Common Kanji -> Hán Việt mappings
-    # This would be populated from the 2000 Kanji PDF
-    HANVIET_MAP = {
-        '日': 'Nhật',
-        '本': 'Bản/Bổn',
-        '人': 'Nhân',
-        '大': 'Đại',
-        '中': 'Trung',
-        '国': 'Quốc',
-        '年': 'Niên',
-        '出': 'Xuất',
-        '生': 'Sinh',
-        '時': 'Thời',
-        '行': 'Hành',
-        '見': 'Kiến',
-        '月': 'Nguyệt',
-        '分': 'Phân',
-        '後': 'Hậu',
-        '前': 'Tiền',
-        '学': 'Học',
-        '気': 'Khí',
-        '事': 'Sự',
-        '自': 'Tự',
-        '社': 'Xã',
-        '者': 'Giả',
-        '地': 'Địa',
-        '方': 'Phương',
-        '新': 'Tân',
-        '場': 'Trường',
-        '員': 'Viên',
-        '立': 'Lập',
-        '開': 'Khai',
-        '手': 'Thủ',
-        '力': 'Lực',
-        '問': 'Vấn',
-        '代': 'Đại',
-        '明': 'Minh',
-        '動': 'Động',
-        '京': 'Kinh',
-        '目': 'Mục',
-        '通': 'Thông',
-        '言': 'Ngôn',
-        '理': 'Lý',
-        '体': 'Thể',
-        '田': 'Điền',
-        '主': 'Chủ',
-        '題': 'Đề',
-        '意': 'Ý',
-        '不': 'Bất',
-        '作': 'Tác',
-        '用': 'Dụng',
-        '度': 'Độ',
-        '家': 'Gia',
-        '世': 'Thế',
-        '多': 'Đa',
-        '正': 'Chính',
-        '安': 'An',
-        '院': 'Viện',
-        '心': 'Tâm',
-        '界': 'Giới',
-        '教': 'Giáo',
-        '文': 'Văn',
-        '元': 'Nguyên',
-        '重': 'Trọng',
-        '近': 'Cận',
-        '考': 'Khảo',
-        '画': 'Họa',
-        '海': 'Hải',
-        '売': 'Mại',
-        '知': 'Tri',
-        '道': 'Đạo',
-        '集': 'Tập',
-        '別': 'Biệt',
-        '物': 'Vật',
-        '使': 'Sử',
-        '品': 'Phẩm',
-        '計': 'Kế',
-        '死': 'Tử',
-        '特': 'Đặc',
-        '私': 'Tư',
-        '始': 'Thủy',
-        '朝': 'Triêu',
-        '運': 'Vận',
-        '終': 'Chung',
-        '台': 'Đài',
-        '広': 'Quảng',
-        '住': 'Trú',
-        '真': 'Chân',
-        '有': 'Hữu',
-        '口': 'Khẩu',
-        '少': 'Thiếu',
-        '町': 'Đinh',
-        '料': 'Liệu',
-        '工': 'Công',
-        '建': 'Kiến',
-        '空': 'Không',
-        '急': 'Cấp',
-        '止': 'Chỉ',
-        '送': 'Tống',
-        '切': 'Thiết',
-        '転': 'Chuyển',
-        '研': 'Nghiên',
-        '足': 'Túc',
-        '究': 'Cứu',
-        '楽': 'Lạc',
-        '起': 'Khởi',
-        '着': 'Trước',
-        '店': 'Điếm',
-        '病': 'Bệnh',
-        '質': 'Chất',
-        '待': 'Đãi',
-        '試': 'Thí',
-        '族': 'Tộc',
-        '銀': 'Ngân',
-        '早': 'Tảo',
-        '映': 'Ánh',
-        '親': 'Thân',
-        '験': 'Nghiệm',
-        '英': 'Anh',
-        '医': 'Y',
-        '仕': 'Sĩ',
-        '去': 'Khứ',
-        '味': 'Vị',
-        '写': 'Tả',
-        '字': 'Tự',
-        '答': 'Đáp',
-        '届': 'Đáo',
-        '届': 'Giới',
-        '届': 'Đáo',
-        '届': 'Đáo',
-        # Animals
-        '犬': 'Khuyển',
-        '猫': 'Miêu',
-        '牛': 'Ngưu',
-        '馬': 'Mã',
-        '羊': 'Dương',
-        '豚': 'Đồn',
-        '鳥': 'Điểu',
-        '魚': 'Ngư',
-        '虫': 'Trùng',
-        '貝': 'Bối',
-        '熊': 'Hùng',
-        '虎': 'Hổ',
-        '象': 'Tượng',
-        '狼': 'Lang',
-        '猿': 'Viên',
-        '鯨': 'Kình',
-        '亀': 'Quy',
-        '蛇': 'Xà',
-        '蝶': 'Điệp',
-        '蜂': 'Phong',
-        '蚊': 'Văn',
-        '蜘': 'Chi',
-        '蛛': 'Thù',
-        '鳩': 'Cưu',
-        '鴨': 'Áp',
-        '鶏': 'Kê',
-        '鷲': 'Thứu',
-        '鹿': 'Lộc',
-        # Food related
-        '食': 'Thực',
-        '飲': 'Ẩm',
-        '米': 'Mễ',
-        '肉': 'Nhục',
-        '菜': 'Thái',
-        '果': 'Quả',
-        '茶': 'Trà',
-        '酒': 'Tửu',
-        '塩': 'Diêm',
-        '糖': 'Đường',
-        '油': 'Du',
-        '卵': 'Noãn',
-        '水': 'Thủy',
-        '火': 'Hỏa',
-        '刀': 'Đao',
-        '皿': 'Mãnh',
-        '箸': 'Trợ',
-    }
+    HANVIET_MAP: Dict[str, str] = {}
+    _loaded = False
+    
+    @classmethod
+    def _load(cls):
+        """Load data from JSON file"""
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "hanviet.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Remove comment key
+                data.pop('_comment', None)
+                cls.HANVIET_MAP = data
+        cls._loaded = True
     
     @staticmethod
     def get_hanviet(word: str) -> str:
         """Get Hán Việt reading for a word"""
+        HanVietDB._load()
         result = []
         for char in word:
             if char in HanVietDB.HANVIET_MAP:
@@ -638,68 +478,33 @@ class HanVietDB:
 # =============================================================================
 
 class RadicalDB:
-    """48 most common radicals database"""
+    """48 most common radicals database - loads from JSON"""
     
-    RADICALS = {
-        '水': {'name_vn': 'Thủy', 'name_en': 'water', 'variants': ['氵', '氺']},
-        '人': {'name_vn': 'Nhân', 'name_en': 'person', 'variants': ['亻', '𠆢']},
-        '手': {'name_vn': 'Thủ', 'name_en': 'hand', 'variants': ['扌']},
-        '木': {'name_vn': 'Mộc', 'name_en': 'tree', 'variants': []},
-        '心': {'name_vn': 'Tâm', 'name_en': 'heart', 'variants': ['忄', '㣺']},
-        '口': {'name_vn': 'Khẩu', 'name_en': 'mouth', 'variants': []},
-        '言': {'name_vn': 'Ngôn', 'name_en': 'to say', 'variants': ['訁']},
-        '糸': {'name_vn': 'Mịch', 'name_en': 'thread', 'variants': ['糹']},
-        '辶': {'name_vn': 'Xước', 'name_en': 'path', 'variants': ['辵']},
-        '土': {'name_vn': 'Thổ', 'name_en': 'ground', 'variants': []},
-        '艹': {'name_vn': 'Thảo', 'name_en': 'plant', 'variants': ['艸']},
-        '月': {'name_vn': 'Nhục', 'name_en': 'meat', 'variants': ['⺼']},
-        '阝': {'name_vn': 'Ấp', 'name_en': 'city wall', 'variants': ['邑']},
-        '日': {'name_vn': 'Nhật', 'name_en': 'sun', 'variants': []},
-        '女': {'name_vn': 'Nữ', 'name_en': 'woman', 'variants': []},
-        '宀': {'name_vn': 'Miên', 'name_en': 'roof', 'variants': []},
-        '貝': {'name_vn': 'Bối', 'name_en': 'shell', 'variants': []},
-        '金': {'name_vn': 'Kim', 'name_en': 'metal/gold', 'variants': ['釒']},
-        '刀': {'name_vn': 'Đao', 'name_en': 'sword', 'variants': ['刂']},
-        '火': {'name_vn': 'Hỏa', 'name_en': 'fire', 'variants': ['灬']},
-        '竹': {'name_vn': 'Trúc', 'name_en': 'bamboo', 'variants': ['⺮']},
-        '力': {'name_vn': 'Lực', 'name_en': 'power', 'variants': []},
-        '禾': {'name_vn': 'Hạt', 'name_en': 'grain', 'variants': []},
-        '頁': {'name_vn': 'Đầu', 'name_en': 'head', 'variants': []},
-        '衣': {'name_vn': 'Y', 'name_en': 'cloak', 'variants': ['衤']},
-        '彳': {'name_vn': 'Hành', 'name_en': 'to go', 'variants': []},
-        '田': {'name_vn': 'Điền', 'name_en': 'rice field', 'variants': []},
-        '目': {'name_vn': 'Mục', 'name_en': 'eye', 'variants': []},
-        '大': {'name_vn': 'Đại', 'name_en': 'big', 'variants': []},
-        '巾': {'name_vn': 'Bố', 'name_en': 'cloth', 'variants': []},
-        '广': {'name_vn': 'Quảng', 'name_en': 'building', 'variants': []},
-        '犬': {'name_vn': 'Khuyển', 'name_en': 'dog', 'variants': ['犭']},
-        '一': {'name_vn': 'Nhất', 'name_en': 'one', 'variants': []},
-        '山': {'name_vn': 'Sơn', 'name_en': 'mountain', 'variants': []},
-        '攵': {'name_vn': 'Xử', 'name_en': 'action', 'variants': ['攴']},
-        '石': {'name_vn': 'Thạch', 'name_en': 'stone', 'variants': []},
-        '尸': {'name_vn': 'Hộ', 'name_en': 'corpse', 'variants': []},
-        '王': {'name_vn': 'Vương', 'name_en': 'jewel/king', 'variants': ['玉']},
-        '疒': {'name_vn': 'Bệnh', 'name_en': 'illness', 'variants': []},
-        '示': {'name_vn': 'Thị', 'name_en': 'altar', 'variants': ['礻']},
-        '車': {'name_vn': 'Xa', 'name_en': 'vehicle', 'variants': []},
-        '酉': {'name_vn': 'Chai', 'name_en': 'bottle', 'variants': []},
-        '雨': {'name_vn': 'Vũ', 'name_en': 'rain', 'variants': []},
-        '囗': {'name_vn': 'Đồng khung', 'name_en': 'enclosure', 'variants': []},
-        '寸': {'name_vn': 'Thốn', 'name_en': 'inch', 'variants': []},
-        '食': {'name_vn': 'Thực', 'name_en': 'eat', 'variants': ['飠']},
-        '十': {'name_vn': 'Thập', 'name_en': 'ten', 'variants': []},
-        '弓': {'name_vn': 'Cung', 'name_en': 'bow', 'variants': []},
-    }
+    RADICALS: Dict[str, Dict] = {}
+    _loaded = False
+    
+    @classmethod
+    def _load(cls):
+        """Load data from JSON file"""
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "radicals.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                data.pop('_comment', None)
+                cls.RADICALS = data
+        cls._loaded = True
     
     @staticmethod
     def identify_radical(kanji: str) -> Dict:
         """Identify the radical of a kanji"""
-        # This would use a kanji database in production
-        # For now, check if kanji itself is a radical
+        RadicalDB._load()
+        
         if kanji in RadicalDB.RADICALS:
             return RadicalDB.RADICALS[kanji]
         
-        # Check for common radical patterns
         for radical, info in RadicalDB.RADICALS.items():
             if radical in kanji:
                 return {**info, 'radical': radical}
@@ -991,6 +796,11 @@ class JapaneseVocabPipeline:
         self.audio_dir = self.output_dir / "audio"
         self.audio_dir.mkdir(exist_ok=True)
         
+        # Checkpoint file
+        self.checkpoint_file = self.output_dir / "checkpoint.json"
+        self.processed: set = set()
+        self._load_checkpoint()
+        
         # Components
         self.parser = EPUBVocabParser(epub_path)
         self.deck_generator = AnkiDeckGenerator("Tiếng Nhật Theo Chủ Đề")
@@ -1002,15 +812,54 @@ class JapaneseVocabPipeline:
             'audio_generated': 0,
             'pitch_found': 0,
             'hanviet_found': 0,
+            'skipped_cached': 0,
         }
+    
+    def _load_checkpoint(self):
+        """Load processed entries from checkpoint"""
+        if self.checkpoint_file.exists():
+            try:
+                with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.processed = set(data.get('processed', []))
+                    print(f"Loaded checkpoint: {len(self.processed)} entries already processed")
+            except Exception as e:
+                print(f"Warning: Could not load checkpoint: {e}")
+                self.processed = set()
+    
+    def _save_checkpoint(self):
+        """Save checkpoint to file"""
+        try:
+            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'processed': list(self.processed),
+                    'epub': self.epub_path,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save checkpoint: {e}")
+    
+    def _get_entry_key(self, entry: VocabEntry) -> str:
+        """Generate unique key for an entry"""
+        return f"{entry.chapter}::{entry.word}::{entry.meaning_vi}"
+    
+    def clear_checkpoint(self):
+        """Clear checkpoint to start fresh"""
+        if self.checkpoint_file.exists():
+            self.checkpoint_file.unlink()
+        self.processed = set()
+        print("Checkpoint cleared")
     
     def run(self, 
             enrich_english: bool = True,
             generate_audio: bool = True,
             generate_pitch: bool = True,
             generate_stroke: bool = True,
-            rate_limit_delay: float = 0.5):
+            rate_limit_delay: float = 0.5,
+            force_restart: bool = False):
         """Run the full pipeline"""
+        
+        if force_restart:
+            self.clear_checkpoint()
         
         print("=" * 60)
         print("JAPANESE VOCABULARY ANKI DECK GENERATOR")
@@ -1029,6 +878,15 @@ class JapaneseVocabPipeline:
             print(f"\n  Processing: {chapter_name} ({len(entries)} words)")
             
             for i, entry in enumerate(entries):
+                entry_key = self._get_entry_key(entry)
+                
+                # Skip if already processed
+                if entry_key in self.processed:
+                    self.stats['skipped_cached'] += 1
+                    # Still add to deck (without re-enriching)
+                    self.deck_generator.add_entry(entry, chapter_name)
+                    continue
+                
                 self.stats['total_words'] += 1
                 
                 # Progress indicator
@@ -1047,9 +905,19 @@ class JapaneseVocabPipeline:
                 # Add to deck
                 self.deck_generator.add_entry(entry, chapter_name)
                 
+                # Mark as processed & save checkpoint
+                self.processed.add(entry_key)
+                
+                # Save checkpoint every 10 entries
+                if len(self.processed) % 10 == 0:
+                    self._save_checkpoint()
+                
                 # Rate limiting for API calls
                 if enrich_english or generate_audio:
                     time.sleep(rate_limit_delay)
+        
+        # Final checkpoint save
+        self._save_checkpoint()
         
         # Phase 3: Export
         print("\n[Phase 3] Exporting Anki deck...")
@@ -1061,11 +929,13 @@ class JapaneseVocabPipeline:
         print("GENERATION COMPLETE")
         print("=" * 60)
         print(f"Total chapters: {self.stats['chapters']}")
-        print(f"Total words: {self.stats['total_words']}")
+        print(f"Total words processed: {self.stats['total_words']}")
+        print(f"Skipped (cached): {self.stats['skipped_cached']}")
         print(f"Audio files generated: {self.stats['audio_generated']}")
         print(f"Pitch patterns found: {self.stats['pitch_found']}")
         print(f"Hán Việt found: {self.stats['hanviet_found']}")
         print(f"\nOutput: {output_path}")
+        print(f"Checkpoint: {self.checkpoint_file}")
         
         return str(output_path)
     
@@ -1135,6 +1005,7 @@ def main():
     parser.add_argument('--no-pitch', action='store_true', help='Skip pitch diagrams')
     parser.add_argument('--no-stroke', action='store_true', help='Skip stroke order')
     parser.add_argument('--delay', type=float, default=0.5, help='API rate limit delay (seconds)')
+    parser.add_argument('--force-restart', action='store_true', help='Clear checkpoint and start fresh')
     
     args = parser.parse_args()
     
@@ -1145,6 +1016,7 @@ def main():
         generate_pitch=not args.no_pitch,
         generate_stroke=not args.no_stroke,
         rate_limit_delay=args.delay,
+        force_restart=args.force_restart,
     )
 
 

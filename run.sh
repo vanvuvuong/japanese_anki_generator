@@ -54,8 +54,9 @@ echo "Select mode:"
 echo "  1) Full (with English, Audio, Pitch, Stroke) - SLOW"
 echo "  2) Fast (Vietnamese only, no API calls) - FAST"
 echo "  3) Medium (with Pitch, no Audio/English) - MEDIUM"
+echo "  4) Force restart (clear cache, start fresh)"
 echo ""
-read -p "Choice [1-3, default=2]: " choice
+read -p "Choice [1-4, default=2]: " choice
 
 case ${choice:-2} in
     1)
@@ -63,12 +64,16 @@ case ${choice:-2} in
         python3 main.py "$EPUB_PATH" -o "$OUTPUT_DIR" --delay 0.5
         ;;
     2)
-        echo -e "${YELLOW}Running FAST mode...${NC}"
+        echo -e "${YELLOW}Running FAST mode (resuming if checkpoint exists)...${NC}"
         python3 main.py "$EPUB_PATH" -o "$OUTPUT_DIR" --no-english --no-audio
         ;;
     3)
         echo -e "${YELLOW}Running MEDIUM mode...${NC}"
         python3 main.py "$EPUB_PATH" -o "$OUTPUT_DIR" --no-english --no-audio --delay 0.2
+        ;;
+    4)
+        echo -e "${YELLOW}Force restart - clearing checkpoint...${NC}"
+        python3 main.py "$EPUB_PATH" -o "$OUTPUT_DIR" --no-english --no-audio --force-restart
         ;;
     *)
         echo -e "${RED}Invalid choice${NC}"
