@@ -1,0 +1,16 @@
+# Japanese Vocabulary Anki Deck Generator
+# Requirements
+
+# Core
+genanki>=0.13.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Audio TTS
+gTTS>=2.4.0
+
+# Optional: Better HTML parsing
+lxml>=4.9.0
+
+# Optional: Progress bar
+tqdm>=4.66.0
