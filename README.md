@@ -1,170 +1,69 @@
 # 📚 Japanese Vocabulary Anki Deck Generator
 
-Công cụ tự động tạo Anki deck học từ vựng tiếng Nhật từ file EPUB.
-
-## ✨ Tính năng
-
-- **Parse EPUB** → Extract từ vựng tự động theo chapter
-- **Sub-decks** → Mỗi chủ đề = 1 sub-deck riêng
-- **Đa ngôn ngữ**: Tiếng Việt, Tiếng Anh, Hán Việt
-- **Pitch Accent** → Biểu đồ SVG như Takoboto
-- **Stroke Order** → Thứ tự nét viết từ KanjiVG
-- **Audio TTS** → Google Text-to-Speech
-- **Link từ điển** → Takoboto integration
-
-## 📦 Cấu trúc Deck
-
-```
-Tiếng Nhật Theo Chủ Đề
-├── Động vật
-│   ├── Động vật có vú
-│   ├── Con chim
-│   └── ...
-├── Thể thao
-├── Địa lý
-├── Cơ thể
-├── Tính từ
-├── Động từ
-└── ... (22 chapters)
-```
+Tạo Anki deck từ EPUB tiếng Nhật với đầy đủ enrichment.
 
 ## 🔧 Cài đặt
 
 ```bash
-# Clone hoặc download
-cd japanese_anki
-
-# Cài dependencies
 pip install -r requirements.txt --break-system-packages
 ```
 
 ## 🚀 Sử dụng
 
-### Quick Start
 ```bash
-./run.sh <đường_dẫn_epub> [thư_mục_output]
-```
-
-### Manual
-```bash
-# Full mode (chậm, có audio + English)
-python3 main.py sach.epub -o ./output
-
-# Fast mode (nhanh, chỉ tiếng Việt)
+# Fast mode (nhanh, không audio)
 python3 main.py sach.epub -o ./output --no-english --no-audio
 
-# Xem help
-python3 main.py --help
+# Full mode (chậm, có audio)
+python3 main.py sach.epub -o ./output
+
+# Force restart (xóa checkpoint)
+python3 main.py sach.epub -o ./output --force-restart
 ```
 
-### Options
+## 🔊 Import Audio vào Anki
 
-| Flag | Mô tả |
-|------|-------|
-| `--no-english` | Bỏ qua lookup tiếng Anh (nhanh hơn) |
-| `--no-audio` | Không generate audio |
-| `--no-pitch` | Không generate pitch diagram |
-| `--no-stroke` | Không generate stroke order |
-| `--delay N` | Delay giữa API calls (giây) |
+**QUAN TRỌNG:** Copy audio vào collection.media TRƯỚC khi import .apkg!
 
-## 📊 Output
+### Bước 1: Tìm thư mục collection.media
 
-```
-output/
-├── japanese_vocabulary.apkg  # File import vào Anki
-├── audio/                    # Audio files
-│   ├── a1b2c3d4.mp3
-│   └── ...
-└── cache/                    # Cached data
-    └── kanjivg/
-```
+| OS      | Đường dẫn                                                         |
+| ------- | ----------------------------------------------------------------- |
+| Windows | `%APPDATA%\Anki2\<profile>\collection.media\`                     |
+| macOS   | `~/Library/Application Support/Anki2/<profile>/collection.media/` |
+| Linux   | `~/.local/share/Anki2/<profile>/collection.media/`                |
 
-## 🎴 Card Format
+### Bước 2: Copy audio
 
-### Front (Question)
-```
-┌─────────────────────┐
-│        犬           │
-│       いぬ          │
-│        🔊           │
-└─────────────────────┘
+```bash
+# Linux/macOS
+cp ./output/audio/*.mp3 ~/.local/share/Anki2/User\ 1/collection.media/
+
+# Windows (PowerShell)
+Copy-Item .\output\audio\*.mp3 "$env:APPDATA\Anki2\User 1\collection.media\"
 ```
 
-### Back (Answer)
-```
-┌─────────────────────┐
-│        犬           │
-│   いぬ (inu)        │
-├─────────────────────┤
-│ 🇻🇳 con chó         │
-│ 🇬🇧 dog             │
-│ 漢越: Khuyển        │
-├─────────────────────┤
-│   [Pitch Diagram]   │
-│   い＼ぬ (2)         │
-├─────────────────────┤
-│  [Stroke Order]     │
-├─────────────────────┤
-│ Bộ thủ: 犬 (Khuyển) │
-├─────────────────────┤
-│   📖 Takoboto       │
-└─────────────────────┘
-```
+### Bước 3: Import .apkg
 
-## 🔌 APIs Used
+File → Import trong Anki.
 
-| Source | Data |
-|--------|------|
-| Jisho.org | English meanings |
-| KanjiVG | Stroke order SVG |
-| gTTS | Audio synthesis |
-| Offline DB | Pitch accent, Hán Việt, Radicals |
-
-## 📝 Pitch Accent Legend
-
-| Pattern | Name | Example |
-|---------|------|---------|
-| 0 | 平板型 (Heiban) | 水 みず |
-| 1 | 頭高型 (Atamadaka) | 猫 ねこ |
-| 2-n | 中高型 (Nakadaka) | 犬 いぬ |
-| n | 尾高型 (Odaka) | 山 やま |
-
-## 🗂 Files
+## 🗂 Data Files (Edit để mở rộng)
 
 ```
-japanese_anki/
-├── main.py           # Main pipeline
-├── pitch_accent.py   # Pitch accent module
-├── stroke_order.py   # Stroke order module
-├── requirements.txt  # Dependencies
-├── run.sh           # Run script
-└── README.md        # This file
+data/
+├── hanviet.json           # Kanji → Hán Việt
+├── radicals.json          # 48 bộ thủ
+├── pitch_accent.json      # Pitch patterns (0=heiban, 1=atamadaka, 2+=nakadaka)
+└── example_sentences.json # Câu ví dụ [["JP", "VN"], ...]
 ```
 
-## ⚠️ Notes
+## Options
 
-1. **API Rate Limiting**: Jisho có rate limit, dùng `--delay` để tránh bị block
-2. **Audio Quality**: gTTS chất lượng 7/10, native speaker tốt hơn
-3. **Pitch Data**: Database offline chưa đầy đủ, có thể thiếu một số từ
-4. **Stroke Order**: Chỉ có cho single kanji, không có cho compound words
-
-## 🔄 Mở rộng
-
-### Thêm nguồn pitch accent
-Edit `pitch_accent.py` → class `OfflinePitchDB.DATABASE`
-
-### Thêm Hán Việt
-Edit `main.py` → class `HanVietDB.HANVIET_MAP`
-
-### Thêm bộ thủ
-Edit `main.py` → class `RadicalDB.RADICALS`
-
-## 📜 License
-
-MIT - Sử dụng tự do
-
-## 🙏 Credits
-
-- [KanjiVG](https://kanjivg.tagaini.net/) - Stroke order data
-- [Jisho.org](https://jisho.org/) - Dictionary API
-- [genanki](https://github.com/kerrickstaley/genanki) - Anki deck generation
+| Flag              | Mô tả                        |
+| ----------------- | ---------------------------- |
+| `--no-english`    | Bỏ lookup tiếng Anh          |
+| `--no-audio`      | Không generate audio         |
+| `--no-pitch`      | Không generate pitch diagram |
+| `--no-stroke`     | Không generate stroke order  |
+| `--delay N`       | Delay API calls (giây)       |
+| `--force-restart` | Xóa checkpoint, chạy lại     |

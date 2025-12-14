@@ -73,6 +73,13 @@ class VocabEntry:
     chapter: str = ""                  # Source chapter
     sub_category: str = ""             # Sub-category within chapter
     takoboto_link: str = ""            # Takoboto dictionary link
+    examples: str = ""                 # Example sentences HTML
+    # Kanji detail fields
+    kanji_pinyin: str = ""             # Chinese pinyin
+    kanji_kun: str = ""                # Kun-yomi
+    kanji_on: str = ""                 # On-yomi  
+    kanji_tu_ghep: str = ""            # Compound words HTML
+    kanji_chi_tiet: str = ""           # Etymology explanation
     
     def generate_takoboto_link(self):
         """Generate Takoboto dictionary link"""
@@ -138,17 +145,22 @@ class EPUBVocabParser:
         try:
             # Vietnamese meaning
             trans_span = div.find('span', class_='top_trans')
-            meaning_vi = trans_span.get_text().strip() if trans_span else ""
+            meaning_vi_raw = trans_span.get_text().strip() if trans_span else ""
+            # Clean Vietnamese - remove any Japanese characters mixed in
+            meaning_vi = self._clean_vietnamese(meaning_vi_raw)
             
             # Japanese word (Kanji or Kana)
             word_span = div.find('span', class_='top_word')
-            word = word_span.get_text().strip() if word_span else ""
+            word_raw = word_span.get_text().strip() if word_span else ""
+            # Clean Japanese - only keep Japanese characters
+            word = self._clean_japanese(word_raw)
             
             # Romaji reading
             post_span = div.find('span', class_='top_post')
             romaji_raw = post_span.get_text().strip() if post_span else ""
-            # Remove parentheses
-            romaji = romaji_raw.strip('()')
+            # Remove parentheses and clean
+            romaji = romaji_raw.strip('()').lower()
+            romaji = ''.join(c for c in romaji if c.isalpha() or c.isspace())
             
             if not word or not meaning_vi:
                 return None
@@ -168,6 +180,32 @@ class EPUBVocabParser:
         except Exception as e:
             print(f"Error parsing entry: {e}")
             return None
+    
+    def _clean_japanese(self, text: str) -> str:
+        """Keep only Japanese characters (Hiragana, Katakana, Kanji)"""
+        result = []
+        for char in text:
+            code = ord(char)
+            # Hiragana: 3040-309F, Katakana: 30A0-30FF, Kanji: 4E00-9FFF, 々
+            if (0x3040 <= code <= 0x309F or  # Hiragana
+                0x30A0 <= code <= 0x30FF or  # Katakana
+                0x4E00 <= code <= 0x9FFF or  # Common Kanji
+                char == '々'):                # Kanji repeat mark
+                result.append(char)
+        return ''.join(result)
+    
+    def _clean_vietnamese(self, text: str) -> str:
+        """Keep only Vietnamese/Latin characters, remove Japanese"""
+        result = []
+        for char in text:
+            code = ord(char)
+            # Skip Japanese characters
+            if (0x3040 <= code <= 0x309F or  # Hiragana
+                0x30A0 <= code <= 0x30FF or  # Katakana
+                0x4E00 <= code <= 0x9FFF):   # Kanji
+                continue
+            result.append(char)
+        return ''.join(result).strip()
     
     def _romaji_to_hiragana(self, romaji: str) -> str:
         """Convert romaji to hiragana (basic conversion)"""
@@ -248,28 +286,40 @@ class JishoAPI:
 
 
 class PitchAccentAPI:
-    """Fetch pitch accent data"""
+    """Fetch pitch accent data - loads from JSON"""
     
-    # Common pitch patterns database (subset)
-    # Format: word -> (pattern_number, mora_list)
-    # Pattern 0 = 平板型 (heiban), 1+ = accent on that mora
-    PITCH_DB = {
-        # This would be populated from OJAD or similar database
-        # Example entries:
-        '犬': ('2', ['い', 'ぬ']),
-        '猫': ('1', ['ね', 'こ']),
-        '行く': ('0', ['い', 'く']),
-        '食べる': ('2', ['た', 'べ', 'る']),
-    }
+    PITCH_DB: Dict[str, Tuple[str, List[str]]] = {}
+    _loaded = False
     
-    @staticmethod
-    def get_pitch_pattern(word: str, reading: str) -> Tuple[str, List[str]]:
+    @classmethod
+    def _load(cls):
+        """Load pitch data from JSON"""
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "pitch_accent.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                data.pop('_comment', None)
+                # Convert: {"word": [["reading", pattern], ...]} -> {"word": (str(pattern), [morae])}
+                for word, readings in data.items():
+                    if readings:
+                        reading, pattern = readings[0]  # Take first reading
+                        morae = cls.split_morae(reading)
+                        cls.PITCH_DB[word] = (str(pattern), morae)
+        cls._loaded = True
+    
+    @classmethod
+    def get_pitch_pattern(cls, word: str, reading: str) -> Tuple[str, List[str]]:
         """Get pitch pattern for a word"""
-        if word in PitchAccentAPI.PITCH_DB:
-            return PitchAccentAPI.PITCH_DB[word]
+        cls._load()
+        
+        if word in cls.PITCH_DB:
+            return cls.PITCH_DB[word]
         
         # Default: return morae from reading with unknown pattern
-        morae = PitchAccentAPI.split_morae(reading)
+        morae = cls.split_morae(reading)
         return ('?', morae)
     
     @staticmethod
@@ -404,10 +454,30 @@ class StrokeOrderAPI:
     
     @staticmethod
     def _add_stroke_numbers(svg_content: str) -> str:
-        """Add stroke numbers to SVG"""
-        # Parse SVG and add numbers at stroke midpoints
-        # This is a simplified version - full implementation would parse paths
-        return svg_content
+        """Clean and simplify SVG for Anki display"""
+        import re
+        
+        # Remove XML declaration and comments
+        svg_content = re.sub(r'<\?xml[^>]*\?>', '', svg_content)
+        svg_content = re.sub(r'<!--.*?-->', '', svg_content, flags=re.DOTALL)
+        
+        # Remove problematic attributes and elements
+        svg_content = re.sub(r'xmlns:kvg="[^"]*"', '', svg_content)
+        svg_content = re.sub(r'kvg:[a-z]+="[^"]*"', '', svg_content)
+        
+        # Keep only essential SVG content
+        svg_match = re.search(r'(<svg[^>]*>.*</svg>)', svg_content, re.DOTALL)
+        if svg_match:
+            svg_content = svg_match.group(1)
+        
+        # Set viewBox and size for consistent display
+        svg_content = re.sub(
+            r'<svg([^>]*)>',
+            '<svg viewBox="0 0 109 109" width="120" height="120" style="stroke:#333;stroke-width:3;fill:none">',
+            svg_content
+        )
+        
+        return svg_content.strip()
 
 
 class TTSGenerator:
@@ -515,6 +585,96 @@ class RadicalDB:
         return {}
 
 
+class ExampleSentencesDB:
+    """Example sentences database - loads from JSON"""
+    
+    SENTENCES: Dict[str, List[List[str]]] = {}
+    _loaded = False
+    
+    @classmethod
+    def _load(cls):
+        """Load sentences from JSON"""
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "example_sentences.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                data.pop('_comment', None)
+                cls.SENTENCES = data
+        cls._loaded = True
+    
+    @classmethod
+    def get_examples(cls, word: str, limit: int = 2) -> List[str]:
+        """Get example sentences for a word"""
+        cls._load()
+        
+        if word in cls.SENTENCES:
+            examples = cls.SENTENCES[word][:limit]
+            # Format: "日本語 → Tiếng Việt"
+            return [f"{jp} → {vi}" for jp, vi in examples]
+        
+        return []
+
+
+class KanjiDB:
+    """Full kanji database with chiết tự - loads from JSON"""
+    
+    DATABASE: Dict[str, Dict] = {}
+    _loaded = False
+    
+    @classmethod
+    def _load(cls):
+        """Load kanji database from JSON"""
+        if cls._loaded:
+            return
+        
+        json_path = Path(__file__).parent / "data" / "kanji_database.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                cls.DATABASE = json.load(f)
+        cls._loaded = True
+    
+    @classmethod
+    def get_kanji_info(cls, kanji: str) -> Dict:
+        """Get full info for a single kanji"""
+        cls._load()
+        return cls.DATABASE.get(kanji, {})
+    
+    @classmethod
+    def get_word_info(cls, word: str) -> Dict:
+        """Get combined info for all kanji in a word"""
+        cls._load()
+        
+        result = {
+            'han_viet': [],
+            'pinyin': [],
+            'kun': [],
+            'on': [],
+            'tu_ghep': [],
+            'chi_tiet': []
+        }
+        
+        for char in word:
+            info = cls.DATABASE.get(char, {})
+            if info:
+                if info.get('han_viet'):
+                    result['han_viet'].append(f"{char}({info['han_viet']})")
+                if info.get('pinyin'):
+                    result['pinyin'].append(info['pinyin'])
+                if info.get('kun'):
+                    result['kun'].append(info['kun'])
+                if info.get('on'):
+                    result['on'].append(info['on'])
+                if info.get('tu_ghep'):
+                    result['tu_ghep'].extend(info['tu_ghep'][:2])
+                if info.get('chi_tiet'):
+                    result['chi_tiet'].append(f"【{char}】{info['chi_tiet'][:200]}")
+        
+        return result
+
+
 # =============================================================================
 # ANKI DECK GENERATOR
 # =============================================================================
@@ -619,6 +779,86 @@ class AnkiDeckGenerator:
     margin: 10px 0;
 }
 
+.kanji-detail {
+    text-align: left;
+    margin: 15px 10px;
+    padding: 10px;
+    background: #f8f9fa;
+    border-left: 3px solid #9b59b6;
+    border-radius: 5px;
+}
+
+.kanji-detail-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #9b59b6;
+    margin-bottom: 8px;
+}
+
+.kanji-pinyin {
+    font-size: 13px;
+    color: #e67e22;
+    margin: 5px 0;
+}
+
+.kanji-reading {
+    font-size: 13px;
+    color: #16a085;
+    margin: 5px 0;
+}
+
+.kanji-compound {
+    font-size: 14px;
+    color: #2980b9;
+    margin: 5px 0;
+}
+
+.kanji-etymology {
+    font-size: 13px;
+    color: #555;
+    line-height: 1.5;
+    margin: 8px 0;
+    padding: 8px;
+    background: #fff;
+    border-radius: 3px;
+}
+
+/* Dark theme support */
+.night_mode .kanji-detail {
+    background: #2d2d2d;
+    border-left-color: #bb86fc;
+}
+
+.night_mode .kanji-detail-title {
+    color: #bb86fc;
+}
+
+.night_mode .kanji-pinyin {
+    color: #ffb74d;
+}
+
+.night_mode .kanji-reading {
+    color: #4db6ac;
+}
+
+.night_mode .kanji-compound {
+    color: #64b5f6;
+}
+
+.night_mode .kanji-etymology {
+    background: #1e1e1e;
+    color: #e0e0e0;
+}
+
+.night_mode .example {
+    background: #2d2d2d;
+    color: #e0e0e0;
+}
+
+.night_mode .radical {
+    color: #ce93d8;
+}
+
 .tags {
     font-size: 12px;
     color: #bdc3c7;
@@ -656,10 +896,9 @@ hr {
 {{#Audio}}{{Audio}}{{/Audio}}
 '''
         
-        # Back template (Answer)
+        # Back template (Answer) - reading hiện trong pitch diagram nên bỏ trùng
         back_template = '''
 <div class="word">{{Word}}</div>
-<div class="reading">{{Reading}}</div>
 <div class="romaji">{{Romaji}}</div>
 
 {{#Audio}}{{Audio}}{{/Audio}}
@@ -684,13 +923,21 @@ hr {
 <div class="radical">Bộ thủ: {{RadicalInfo}}</div>
 {{/RadicalInfo}}
 
-{{#KanjiOrigin}}
-<div class="origin">{{KanjiOrigin}}</div>
-{{/KanjiOrigin}}
+{{#KanjiChiTiet}}
+<hr>
+<div class="kanji-detail">
+    <div class="kanji-detail-title">📚 Chiết tự Hán</div>
+    {{#KanjiPinyin}}<div class="kanji-pinyin">🔊 Pinyin: {{KanjiPinyin}}</div>{{/KanjiPinyin}}
+    {{#KanjiKun}}<div class="kanji-reading">訓: {{KanjiKun}}</div>{{/KanjiKun}}
+    {{#KanjiOn}}<div class="kanji-reading">音: {{KanjiOn}}</div>{{/KanjiOn}}
+    {{#KanjiTuGhep}}<div class="kanji-compound">📝 Từ ghép: {{KanjiTuGhep}}</div>{{/KanjiTuGhep}}
+    <div class="kanji-etymology">{{KanjiChiTiet}}</div>
+</div>
+{{/KanjiChiTiet}}
 
 {{#Examples}}
 <hr>
-<div class="example">{{Examples}}</div>
+<div class="example">💬 {{Examples}}</div>
 {{/Examples}}
 
 <div class="dictionary-link">
@@ -716,7 +963,11 @@ hr {
                 {'name': 'Audio'},
                 {'name': 'Examples'},
                 {'name': 'RadicalInfo'},
-                {'name': 'KanjiOrigin'},
+                {'name': 'KanjiPinyin'},
+                {'name': 'KanjiKun'},
+                {'name': 'KanjiOn'},
+                {'name': 'KanjiTuGhep'},
+                {'name': 'KanjiChiTiet'},
                 {'name': 'Chapter'},
                 {'name': 'SubCategory'},
                 {'name': 'TakobotoLink'},
@@ -752,10 +1003,14 @@ hr {
                 entry.pitch_pattern,
                 entry.pitch_svg,
                 entry.stroke_order_svg,
-                f'[sound:{entry.audio_file}]' if entry.audio_file else '',
-                '<br>'.join(entry.example_sentences),
+                f'[sound:{Path(entry.audio_file).name}]' if entry.audio_file else '',
+                entry.examples,
                 entry.radical_info,
-                entry.kanji_origin,
+                entry.kanji_pinyin,
+                entry.kanji_kun,
+                entry.kanji_on,
+                entry.kanji_tu_ghep,
+                entry.kanji_chi_tiet,
                 entry.chapter,
                 entry.sub_category,
                 entry.takoboto_link,
@@ -795,6 +1050,8 @@ class JapaneseVocabPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir = self.output_dir / "audio"
         self.audio_dir.mkdir(exist_ok=True)
+        self.stroke_dir = self.output_dir / "stroke_cache"
+        self.stroke_dir.mkdir(exist_ok=True)
         
         # Checkpoint file
         self.checkpoint_file = self.output_dir / "checkpoint.json"
@@ -810,8 +1067,12 @@ class JapaneseVocabPipeline:
             'total_words': 0,
             'chapters': 0,
             'audio_generated': 0,
+            'audio_cached': 0,
+            'stroke_generated': 0,
+            'stroke_cached': 0,
             'pitch_found': 0,
             'hanviet_found': 0,
+            'chiettu_found': 0,
             'skipped_cached': 0,
         }
     
@@ -931,9 +1192,13 @@ class JapaneseVocabPipeline:
         print(f"Total chapters: {self.stats['chapters']}")
         print(f"Total words processed: {self.stats['total_words']}")
         print(f"Skipped (cached): {self.stats['skipped_cached']}")
-        print(f"Audio files generated: {self.stats['audio_generated']}")
+        print(f"Audio generated: {self.stats['audio_generated']}")
+        print(f"Audio cached (skipped): {self.stats['audio_cached']}")
+        print(f"Stroke generated: {self.stats['stroke_generated']}")
+        print(f"Stroke cached (skipped): {self.stats['stroke_cached']}")
         print(f"Pitch patterns found: {self.stats['pitch_found']}")
         print(f"Hán Việt found: {self.stats['hanviet_found']}")
+        print(f"Chiết tự found: {self.stats['chiettu_found']}")
         print(f"\nOutput: {output_path}")
         print(f"Checkpoint: {self.checkpoint_file}")
         
@@ -946,10 +1211,38 @@ class JapaneseVocabPipeline:
                       generate_stroke: bool):
         """Enrich a single vocabulary entry"""
         
-        # Hán Việt
-        entry.han_viet = HanVietDB.get_hanviet(entry.word)
-        if entry.han_viet:
+        # Kanji database - full info including chiết tự
+        kanji_info = KanjiDB.get_word_info(entry.word)
+        
+        # Hán Việt from kanji_info
+        if kanji_info['han_viet']:
+            entry.han_viet = ' '.join(kanji_info['han_viet'])
             self.stats['hanviet_found'] += 1
+        
+        # Pinyin
+        if kanji_info['pinyin']:
+            entry.kanji_pinyin = ', '.join(kanji_info['pinyin'])
+        
+        # Kun/On readings
+        if kanji_info['kun']:
+            entry.kanji_kun = ' | '.join(kanji_info['kun'])
+        if kanji_info['on']:
+            entry.kanji_on = ' | '.join(kanji_info['on'])
+        
+        # Từ ghép (compound words)
+        if kanji_info['tu_ghep']:
+            tu_ghep_html = []
+            for tg in kanji_info['tu_ghep'][:4]:
+                if isinstance(tg, dict):
+                    tu_ghep_html.append(f"{tg.get('viet', '')} {tg.get('han', '')}")
+                else:
+                    tu_ghep_html.append(str(tg))
+            entry.kanji_tu_ghep = ' • '.join(tu_ghep_html)
+        
+        # Chi tiết chiết tự
+        if kanji_info['chi_tiet']:
+            entry.kanji_chi_tiet = '<br><br>'.join(kanji_info['chi_tiet'][:2])
+            self.stats['chiettu_found'] += 1
         
         # Radical info
         for char in entry.word:
@@ -957,6 +1250,11 @@ class JapaneseVocabPipeline:
             if radical_info:
                 entry.radical_info = f"{radical_info.get('radical', char)} ({radical_info.get('name_vn', '')} - {radical_info.get('name_en', '')})"
                 break
+        
+        # Example sentences (O(1) lookup)
+        examples = ExampleSentencesDB.get_examples(entry.word, limit=2)
+        if examples:
+            entry.examples = "<br>".join(examples)
         
         # English meaning (API call)
         if enrich_english:
@@ -973,18 +1271,35 @@ class JapaneseVocabPipeline:
                 self.stats['pitch_found'] += 1
             entry.pitch_svg = PitchDiagramGenerator.generate_svg(entry.reading, pattern, morae)
         
-        # Stroke order (only for single kanji)
+        # Stroke order (only for single kanji) - with cache
         if generate_stroke and len(entry.word) == 1:
-            try:
-                entry.stroke_order_svg = StrokeOrderAPI.get_stroke_order_svg(entry.word)
-            except:
-                pass
+            stroke_cache_file = self.stroke_dir / f"{ord(entry.word)}.svg"
+            
+            if stroke_cache_file.exists():
+                # Load from cache
+                entry.stroke_order_svg = stroke_cache_file.read_text(encoding='utf-8')
+                self.stats['stroke_cached'] += 1
+            else:
+                try:
+                    svg = StrokeOrderAPI.get_stroke_order_svg(entry.word)
+                    if svg:
+                        entry.stroke_order_svg = svg
+                        # Save to cache
+                        stroke_cache_file.write_text(svg, encoding='utf-8')
+                        self.stats['stroke_generated'] += 1
+                except:
+                    pass
         
-        # Audio
+        # Audio - check if already exists
         if generate_audio:
             audio_filename = f"{hashlib.md5(entry.word.encode()).hexdigest()[:8]}.mp3"
             audio_path = self.audio_dir / audio_filename
-            if TTSGenerator.generate_audio(entry.word, str(audio_path)):
+            
+            if audio_path.exists():
+                # Audio already exists, skip generation
+                entry.audio_file = str(audio_path)
+                self.stats['audio_cached'] += 1
+            elif TTSGenerator.generate_audio(entry.word, str(audio_path)):
                 entry.audio_file = str(audio_path)
                 self.stats['audio_generated'] += 1
 
