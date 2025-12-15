@@ -77,11 +77,11 @@ class VocabEntry:
     # Kanji detail fields
     kanji_pinyin: str = ""             # Chinese pinyin
     kanji_kun: str = ""                # Kun-yomi
-    kanji_on: str = ""                 # On-yomi  
+    kanji_on: str = ""                 # On-yomi
     kanji_tu_ghep: str = ""            # Compound words HTML
     kanji_chi_tiet: str = ""           # Etymology explanation
     frequency_info: str = ""           # Frequency tier [S #8]
-    
+
     def generate_takoboto_link(self):
         """Generate Takoboto dictionary link"""
         encoded = urllib.parse.quote(self.word)
@@ -95,38 +95,38 @@ class VocabEntry:
 
 class EPUBVocabParser:
     """Parse vocabulary from EPUB file"""
-    
+
     def __init__(self, epub_path: str):
         self.epub_path = epub_path
         self.chapters = {}  # chapter_name -> list of VocabEntry
-        
+
     def parse(self) -> Dict[str, List[VocabEntry]]:
         """Extract all vocabulary from EPUB"""
         with zipfile.ZipFile(self.epub_path, 'r') as zf:
             # Find all chapter files
             chapter_files = sorted([
-                f for f in zf.namelist() 
+                f for f in zf.namelist()
                 if 'chapter-' in f and f.endswith('.xhtml')
             ], key=lambda x: int(re.search(r'chapter-(\d+)', x).group(1)))
-            
+
             for chapter_file in chapter_files:
                 with zf.open(chapter_file) as f:
                     content = f.read().decode('utf-8')
                     self._parse_chapter(chapter_file, content)
-        
+
         return self.chapters
-    
+
     def _parse_chapter(self, filename: str, content: str):
         """Parse a single chapter"""
         soup = BeautifulSoup(content, 'html.parser')
-        
+
         # Get chapter title from h1
         h1 = soup.find('h1')
         chapter_name = h1.get_text().strip() if h1 else filename
-        
+
         entries = []
         current_subcategory = ""
-        
+
         # Find all h2 (subcategories) and vocabulary entries
         for element in soup.find_all(['h2', 'div']):
             if element.name == 'h2':
@@ -137,10 +137,10 @@ class EPUBVocabParser:
                     entry = self._parse_vocab_entry(element, chapter_name, current_subcategory)
                     if entry:
                         entries.append(entry)
-        
+
         if entries:
             self.chapters[chapter_name] = entries
-    
+
     def _parse_vocab_entry(self, div, chapter: str, subcategory: str) -> Optional[VocabEntry]:
         """Parse a single vocabulary entry div"""
         try:
@@ -149,23 +149,23 @@ class EPUBVocabParser:
             meaning_vi_raw = trans_span.get_text().strip() if trans_span else ""
             # Clean Vietnamese - remove any Japanese characters mixed in
             meaning_vi = self._clean_vietnamese(meaning_vi_raw)
-            
+
             # Japanese word (Kanji or Kana)
             word_span = div.find('span', class_='top_word')
             word_raw = word_span.get_text().strip() if word_span else ""
             # Clean Japanese - only keep Japanese characters
             word = self._clean_japanese(word_raw)
-            
+
             # Romaji reading
             post_span = div.find('span', class_='top_post')
             romaji_raw = post_span.get_text().strip() if post_span else ""
             # Remove parentheses and clean
             romaji = romaji_raw.strip('()').lower()
             romaji = ''.join(c for c in romaji if c.isalpha() or c.isspace())
-            
+
             if not word or not meaning_vi:
                 return None
-            
+
             entry = VocabEntry(
                 word=word,
                 reading=self._romaji_to_hiragana(romaji),
@@ -175,13 +175,13 @@ class EPUBVocabParser:
                 sub_category=subcategory
             )
             entry.generate_takoboto_link()
-            
+
             return entry
-            
+
         except Exception as e:
             print(f"Error parsing entry: {e}")
             return None
-    
+
     def _clean_japanese(self, text: str) -> str:
         """Keep only Japanese characters (Hiragana, Katakana, Kanji)"""
         result = []
@@ -194,7 +194,7 @@ class EPUBVocabParser:
                 char == '々'):                # Kanji repeat mark
                 result.append(char)
         return ''.join(result)
-    
+
     def _clean_vietnamese(self, text: str) -> str:
         """Keep only Vietnamese/Latin characters, remove Japanese"""
         result = []
@@ -207,7 +207,7 @@ class EPUBVocabParser:
                 continue
             result.append(char)
         return ''.join(result).strip()
-    
+
     def _romaji_to_hiragana(self, romaji: str) -> str:
         """Convert romaji to hiragana (basic conversion)"""
         # This is a simplified conversion - for production, use a proper library
@@ -241,12 +241,12 @@ class EPUBVocabParser:
             # Long vowels
             'ā': 'ああ', 'ī': 'いい', 'ū': 'うう', 'ē': 'ええ', 'ō': 'おお',
         }
-        
+
         result = romaji.lower()
         # Sort by length (longest first) to avoid partial replacements
         for r, h in sorted(romaji_map.items(), key=lambda x: -len(x[0])):
             result = result.replace(r, h)
-        
+
         return result
 
 
@@ -256,9 +256,9 @@ class EPUBVocabParser:
 
 class JishoAPI:
     """Jisho.org API for English meanings and additional data"""
-    
+
     BASE_URL = "https://jisho.org/api/v1/search/words"
-    
+
     @staticmethod
     def lookup(word: str) -> Dict:
         """Look up a word in Jisho"""
@@ -272,32 +272,59 @@ class JishoAPI:
         except Exception as e:
             print(f"Jisho lookup error for {word}: {e}")
         return {}
-    
-    @staticmethod
-    def get_english_meaning(word: str) -> str:
-        """Get English meaning from Jisho"""
-        data = JishoAPI.lookup(word)
+
+    _english_cache_dir: Path = None
+
+    @classmethod
+    def _init_cache(cls):
+        if cls._english_cache_dir is None:
+            cls._english_cache_dir = Path(__file__).parent / "data" / "english_cache"
+            cls._english_cache_dir.mkdir(exist_ok=True)
+
+    @classmethod
+    def get_english_meaning(cls, word: str) -> str:
+        """Get English meaning from Jisho with cache"""
+        cls._init_cache()
+
+        # Check cache
+        word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
+        cache_file = cls._english_cache_dir / f"{word_hash}.txt"
+        if cache_file.exists():
+            return cache_file.read_text(encoding='utf-8')
+
+        # Fetch from API
+        data = cls.lookup(word)
+        meaning = ""
         if data and 'senses' in data:
             meanings = []
             for sense in data['senses'][:2]:  # First 2 senses
                 if 'english_definitions' in sense:
                     meanings.extend(sense['english_definitions'][:3])
-            return "; ".join(meanings)
-        return ""
+            meaning = "; ".join(meanings)
+
+        # Save to cache
+        if meaning:
+            cache_file.write_text(meaning, encoding='utf-8')
+
+        return meaning
 
 
 class PitchAccentAPI:
-    """Fetch pitch accent data - loads from JSON"""
-    
+    """Fetch pitch accent data - loads from JSON with API fallback"""
+
     PITCH_DB: Dict[str, Tuple[str, List[str]]] = {}
     _loaded = False
-    
+    _cache_dir: Path = None
+
     @classmethod
     def _load(cls):
         """Load pitch data from JSON"""
         if cls._loaded:
             return
-        
+
+        cls._cache_dir = Path(__file__).parent / "data" / "pitch_cache"
+        cls._cache_dir.mkdir(exist_ok=True)
+
         json_path = Path(__file__).parent / "data" / "pitch_accent.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -310,25 +337,76 @@ class PitchAccentAPI:
                         morae = cls.split_morae(reading)
                         cls.PITCH_DB[word] = (str(pattern), morae)
         cls._loaded = True
-    
+
     @classmethod
-    def get_pitch_pattern(cls, word: str, reading: str) -> Tuple[str, List[str]]:
+    def get_pitch_pattern(cls, word: str, reading: str, offline: bool = False) -> Tuple[str, List[str]]:
         """Get pitch pattern for a word"""
         cls._load()
-        
+
+        # 1. Check local DB
         if word in cls.PITCH_DB:
             return cls.PITCH_DB[word]
-        
-        # Default: return morae from reading with unknown pattern
+
         morae = cls.split_morae(reading)
-        return ('?', morae)
-    
+
+        # 2. Check cache - use stable hash
+        word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
+        cache_file = cls._cache_dir / f"{word_hash}.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                    return (str(cached.get('pattern', '?')), morae)
+            except:
+                pass
+
+        # 3. Skip API if offline
+        if offline:
+            return ('?', morae)
+
+        # 4. Fetch from Jisho API
+        pattern = cls._fetch_from_jisho(word, reading)
+
+        # 5. Save to cache
+        if pattern != '?':
+            try:
+                with open(cache_file, 'w', encoding='utf-8') as f:
+                    json.dump({'word': word, 'reading': reading, 'pattern': pattern}, f)
+            except:
+                pass
+
+        return (pattern, morae)
+
+    @classmethod
+    def _fetch_from_jisho(cls, word: str, reading: str) -> str:
+        """Fetch pitch from Jisho API (has partial pitch data)"""
+        try:
+            url = f"https://jisho.org/api/v1/search/words?keyword={urllib.parse.quote(word)}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                for item in data.get('data', []):
+                    japanese = item.get('japanese', [])
+                    for jp in japanese:
+                        if jp.get('word') == word or jp.get('reading') == reading:
+                            # Jisho sometimes includes pitch in tags
+                            tags = item.get('tags', [])
+                            for tag in tags:
+                                if 'pitch' in tag.lower():
+                                    # Extract number from tag
+                                    nums = re.findall(r'\d+', tag)
+                                    if nums:
+                                        return nums[0]
+        except:
+            pass
+        return '?'
+
     @staticmethod
     def split_morae(text: str) -> List[str]:
         """Split Japanese text into morae"""
         # Small kana that combine with previous
         small_kana = 'ゃゅょャュョァィゥェォ'
-        
+
         morae = []
         i = 0
         while i < len(text):
@@ -343,44 +421,44 @@ class PitchAccentAPI:
 
 class PitchDiagramGenerator:
     """Generate SVG pitch accent diagrams"""
-    
+
     @staticmethod
     def generate_svg(reading: str, pattern: str, morae: List[str]) -> str:
         """
         Generate SVG pitch accent diagram similar to Takoboto/JapanDict
-        
+
         Args:
             reading: Hiragana reading
             pattern: Pitch pattern number (0 = heiban, 1+ = accent position)
             morae: List of morae
-        
+
         Returns:
             SVG string
         """
         if not morae:
             morae = PitchAccentAPI.split_morae(reading)
-        
+
         num_morae = len(morae)
         if num_morae == 0:
             return ""
-        
+
         # SVG dimensions
         mora_width = 30
         width = mora_width * num_morae + 40
         height = 80
-        
+
         # Pitch levels
         high_y = 20
         low_y = 50
         text_y = 70
-        
+
         # Determine pitch heights for each mora
         heights = []
         try:
             pattern_num = int(pattern) if pattern.isdigit() else -1
         except:
             pattern_num = -1
-        
+
         if pattern_num == 0:
             # 平板型 (heiban): low-high-high-high...
             heights = [low_y] + [high_y] * (num_morae - 1)
@@ -398,7 +476,7 @@ class PitchDiagramGenerator:
         else:
             # Unknown pattern - show flat
             heights = [high_y] * num_morae
-        
+
         # Build SVG
         svg_parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
@@ -408,82 +486,82 @@ class PitchDiagramGenerator:
             '  .pitch-dot { fill: #e74c3c; }',
             '</style>',
         ]
-        
+
         # Draw pitch line
         points = []
         for i, (mora, h) in enumerate(zip(morae, heights)):
             x = 20 + i * mora_width + mora_width // 2
             points.append(f"{x},{h}")
-        
+
         if len(points) > 1:
             svg_parts.append(f'<polyline class="pitch-line" points="{" ".join(points)}" />')
-        
+
         # Draw dots and text
         for i, (mora, h) in enumerate(zip(morae, heights)):
             x = 20 + i * mora_width + mora_width // 2
             svg_parts.append(f'<circle class="pitch-dot" cx="{x}" cy="{h}" r="4" />')
             svg_parts.append(f'<text class="mora-text" x="{x}" y="{text_y}">{mora}</text>')
-        
+
         svg_parts.append('</svg>')
-        
+
         return '\n'.join(svg_parts)
 
 
 class StrokeOrderAPI:
     """Generate stroke order diagrams using KanjiVG data"""
-    
+
     KANJIVG_URL = "https://raw.githubusercontent.com/KanjiVG/kanjivg/master/kanji/{}.svg"
-    
+
     @staticmethod
     def get_stroke_order_svg(kanji: str) -> str:
         """Get stroke order SVG for a single kanji"""
         if len(kanji) != 1:
             return ""
-        
+
         # Get unicode code point
         code = format(ord(kanji), '05x')
         url = StrokeOrderAPI.KANJIVG_URL.format(code)
-        
+
         try:
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 return StrokeOrderAPI._add_stroke_numbers(response.text)
         except Exception as e:
             print(f"Stroke order fetch error for {kanji}: {e}")
-        
+
         return ""
-    
+
     @staticmethod
     def _add_stroke_numbers(svg_content: str) -> str:
         """Clean and simplify SVG for Anki display"""
         import re
-        
+
         # Remove XML declaration and comments
         svg_content = re.sub(r'<\?xml[^>]*\?>', '', svg_content)
         svg_content = re.sub(r'<!--.*?-->', '', svg_content, flags=re.DOTALL)
-        
+
         # Remove problematic attributes and elements
         svg_content = re.sub(r'xmlns:kvg="[^"]*"', '', svg_content)
         svg_content = re.sub(r'kvg:[a-z]+="[^"]*"', '', svg_content)
-        
+
         # Keep only essential SVG content
         svg_match = re.search(r'(<svg[^>]*>.*</svg>)', svg_content, re.DOTALL)
         if svg_match:
             svg_content = svg_match.group(1)
-        
-        # Set viewBox and size for consistent display
+
+        # Set viewBox and size - use class for theme support
         svg_content = re.sub(
             r'<svg([^>]*)>',
-            '<svg viewBox="0 0 109 109" width="120" height="120" style="stroke:#333;stroke-width:3;fill:none">',
+            '<svg viewBox="0 0 109 109" width="120" height="120" class="stroke-svg">',
             svg_content
         )
-        
+
         return svg_content.strip()
 
 
 class TTSGenerator:
     """Generate audio using TTS"""
-    
+
     @staticmethod
     def generate_audio(text: str, output_path: str, lang: str = 'ja') -> bool:
         """Generate TTS audio file using gTTS"""
@@ -514,16 +592,16 @@ class TTSGenerator:
 
 class HanVietDB:
     """Sino-Vietnamese reading database - loads from JSON"""
-    
+
     HANVIET_MAP: Dict[str, str] = {}
     _loaded = False
-    
+
     @classmethod
     def _load(cls):
         """Load data from JSON file"""
         if cls._loaded:
             return
-        
+
         json_path = Path(__file__).parent / "data" / "hanviet.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -532,7 +610,7 @@ class HanVietDB:
                 data.pop('_comment', None)
                 cls.HANVIET_MAP = data
         cls._loaded = True
-    
+
     @staticmethod
     def get_hanviet(word: str) -> str:
         """Get Hán Việt reading for a word"""
@@ -550,16 +628,16 @@ class HanVietDB:
 
 class RadicalDB:
     """48 most common radicals database - loads from JSON"""
-    
+
     RADICALS: Dict[str, Dict] = {}
     _loaded = False
-    
+
     @classmethod
     def _load(cls):
         """Load data from JSON file"""
         if cls._loaded:
             return
-        
+
         json_path = Path(__file__).parent / "data" / "radicals.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -567,48 +645,48 @@ class RadicalDB:
                 data.pop('_comment', None)
                 cls.RADICALS = data
         cls._loaded = True
-    
+
     @staticmethod
     def identify_radical(kanji: str) -> Dict:
         """Identify the radical of a kanji"""
         RadicalDB._load()
-        
+
         if kanji in RadicalDB.RADICALS:
             return RadicalDB.RADICALS[kanji]
-        
+
         for radical, info in RadicalDB.RADICALS.items():
             if radical in kanji:
                 return {**info, 'radical': radical}
             for variant in info.get('variants', []):
                 if variant in kanji:
                     return {**info, 'radical': radical}
-        
+
         return {}
 
 
 class KanjiFrequencyDB:
     """Kanji frequency database - loads from JSON"""
-    
+
     FREQ: Dict[str, Dict] = {}
     _loaded = False
-    
+
     @classmethod
     def _load(cls):
         if cls._loaded:
             return
-        
+
         json_path = Path(__file__).parent / "data" / "kanji_frequency.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
                 cls.FREQ = json.load(f)
         cls._loaded = True
-    
+
     @classmethod
     def get_frequency(cls, kanji: str) -> Dict:
         """Get frequency info for a kanji. Returns {'rank': int, 'tier': str}"""
         cls._load()
         return cls.FREQ.get(kanji, {})
-    
+
     @classmethod
     def get_word_frequency(cls, word: str) -> Dict:
         """Get frequency info for first kanji in word with frequency data"""
@@ -621,20 +699,20 @@ class KanjiFrequencyDB:
 
 class ExampleSentencesDB:
     """Example sentences database - loads from JSON with API fallback"""
-    
+
     SENTENCES: Dict[str, List[List[str]]] = {}
     _loaded = False
     _cache_dir: Path = None
-    
+
     @classmethod
     def _load(cls):
         """Load sentences from JSON"""
         if cls._loaded:
             return
-        
+
         cls._cache_dir = Path(__file__).parent / "data" / "examples_cache"
         cls._cache_dir.mkdir(exist_ok=True)
-        
+
         json_path = Path(__file__).parent / "data" / "example_sentences.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -642,19 +720,20 @@ class ExampleSentencesDB:
                 data.pop('_comment', None)
                 cls.SENTENCES = data
         cls._loaded = True
-    
+
     @classmethod
-    def get_examples(cls, word: str, limit: int = 2) -> List[str]:
+    def get_examples(cls, word: str, limit: int = 2, offline: bool = False) -> List[str]:
         """Get example sentences for a word"""
         cls._load()
-        
+
         if word in cls.SENTENCES:
             examples = cls.SENTENCES[word][:limit]
             # Format: "日本語 → Tiếng Việt"
             return [f"{jp} → {vi}" for jp, vi in examples]
-        
-        # Check cache
-        cache_file = cls._cache_dir / f"{hash(word) & 0xFFFFFFFF}.json"
+
+        # Check cache - use stable hash
+        word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
+        cache_file = cls._cache_dir / f"{word_hash}.json"
         if cache_file and cache_file.exists():
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
@@ -662,10 +741,14 @@ class ExampleSentencesDB:
                     return cached[:limit]
             except:
                 pass
-        
+
+        # Skip API if offline
+        if offline:
+            return []
+
         # Fetch from Tatoeba API
         examples = cls._fetch_tatoeba(word, limit)
-        
+
         # Save to cache
         if examples and cache_file:
             try:
@@ -673,9 +756,9 @@ class ExampleSentencesDB:
                     json.dump(examples, f, ensure_ascii=False)
             except:
                 pass
-        
+
         return examples
-    
+
     @classmethod
     def _fetch_tatoeba(cls, word: str, limit: int = 2) -> List[str]:
         """Fetch examples from Tatoeba API"""
@@ -700,33 +783,33 @@ class ExampleSentencesDB:
 
 class KanjiDB:
     """Full kanji database with chiết tự - loads from JSON"""
-    
+
     DATABASE: Dict[str, Dict] = {}
     _loaded = False
-    
+
     @classmethod
     def _load(cls):
         """Load kanji database from JSON"""
         if cls._loaded:
             return
-        
+
         json_path = Path(__file__).parent / "data" / "kanji_database.json"
         if json_path.exists():
             with open(json_path, 'r', encoding='utf-8') as f:
                 cls.DATABASE = json.load(f)
         cls._loaded = True
-    
+
     @classmethod
     def get_kanji_info(cls, kanji: str) -> Dict:
         """Get full info for a single kanji"""
         cls._load()
         return cls.DATABASE.get(kanji, {})
-    
+
     @classmethod
     def get_word_info(cls, word: str) -> Dict:
         """Get combined info for all kanji in a word"""
         cls._load()
-        
+
         result = {
             'han_viet': [],
             'pinyin': [],
@@ -735,7 +818,7 @@ class KanjiDB:
             'tu_ghep': [],
             'chi_tiet': []
         }
-        
+
         for char in word:
             info = cls.DATABASE.get(char, {})
             if info:
@@ -751,7 +834,7 @@ class KanjiDB:
                     result['tu_ghep'].extend(info['tu_ghep'][:2])
                 if info.get('chi_tiet'):
                     result['chi_tiet'].append(f"【{char}】{info['chi_tiet'][:200]}")
-        
+
         return result
 
 
@@ -761,20 +844,20 @@ class KanjiDB:
 
 class AnkiDeckGenerator:
     """Generate Anki deck with custom note type"""
-    
+
     # Unique IDs for model and deck (generate once, keep consistent)
     MODEL_ID = 1607392319
     DECK_ID_BASE = 2059400110
-    
+
     def __init__(self, deck_name: str = "Japanese Vocabulary"):
         self.deck_name = deck_name
         self.model = self._create_model()
         self.decks = {}  # chapter_name -> genanki.Deck
         self.media_files = []  # List of media files to include
-        
+
     def _create_model(self) -> genanki.Model:
         """Create custom Anki note type with all fields"""
-        
+
         # CSS styling
         css = '''
 .card {
@@ -904,6 +987,26 @@ class AnkiDeckGenerator:
 }
 
 /* Dark theme support */
+.stroke-svg {
+    stroke: #333;
+    stroke-width: 3;
+    fill: none;
+}
+
+.stroke-svg text {
+    fill: #3498db;
+    stroke: none;
+    font-size: 8px;
+}
+
+.night_mode .stroke-svg {
+    stroke: #e0e0e0;
+}
+
+.night_mode .stroke-svg text {
+    fill: #64b5f6;
+}
+
 .night_mode .kanji-detail {
     background: #2d2d2d;
     border-left-color: #bb86fc;
@@ -986,7 +1089,7 @@ hr {
     margin: 20px 0;
 }
 '''
-        
+
         # Front template (Question) - pitch ở đây để học phát âm
         front_template = '''
 <div class="word">{{Word}}</div>
@@ -994,10 +1097,11 @@ hr {
 {{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
 {{#Audio}}{{Audio}}{{/Audio}}
 '''
-        
+
         # Back template (Answer)
         back_template = '''
 <div class="word">{{Word}}</div>
+{{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
 <div class="romaji">{{Romaji}}</div>
 
 {{#Audio}}{{Audio}}{{/Audio}}
@@ -1031,7 +1135,7 @@ hr {
 
 {{#Examples}}
 <hr>
-<div class="example">💬 {{Examples}}</div>
+<div class="example">{{Examples}}</div>
 {{/Examples}}
 
 <div class="dictionary-link">
@@ -1040,7 +1144,7 @@ hr {
 
 <div class="tags">{{Chapter}} / {{SubCategory}}</div>
 '''
-        
+
         return genanki.Model(
             self.MODEL_ID,
             'Japanese Vocabulary Enhanced',
@@ -1076,7 +1180,7 @@ hr {
             ],
             css=css,
         )
-    
+
     def add_entry(self, entry: VocabEntry, chapter: str):
         """Add a vocabulary entry to the appropriate deck"""
         # Create deck if not exists
@@ -1084,7 +1188,7 @@ hr {
             deck_id = self.DECK_ID_BASE + hash(chapter) % 1000000
             deck = genanki.Deck(deck_id, f"{self.deck_name}::{chapter}")
             self.decks[chapter] = deck
-        
+
         # Create note
         note = genanki.Note(
             model=self.model,
@@ -1116,13 +1220,13 @@ hr {
                 entry.sub_category.replace(' ', '_') if entry.sub_category else '',
             ]
         )
-        
+
         self.decks[chapter].add_note(note)
-        
+
         # Track audio file
         if entry.audio_file and os.path.exists(entry.audio_file):
             self.media_files.append(entry.audio_file)
-    
+
     def export(self, output_path: str):
         """Export all decks to a single .apkg file"""
         # Create package with all decks
@@ -1139,7 +1243,7 @@ hr {
 
 class JapaneseVocabPipeline:
     """Main pipeline to generate Anki deck"""
-    
+
     def __init__(self, epub_path: str, output_dir: str = "./output"):
         self.epub_path = epub_path
         self.output_dir = Path(output_dir)
@@ -1148,16 +1252,16 @@ class JapaneseVocabPipeline:
         self.audio_dir.mkdir(exist_ok=True)
         self.stroke_dir = self.output_dir / "stroke_cache"
         self.stroke_dir.mkdir(exist_ok=True)
-        
+
         # Checkpoint file
         self.checkpoint_file = self.output_dir / "checkpoint.json"
         self.processed: set = set()
         self._load_checkpoint()
-        
+
         # Components
         self.parser = EPUBVocabParser(epub_path)
         self.deck_generator = AnkiDeckGenerator("Tiếng Nhật Theo Chủ Đề")
-        
+
         # Stats
         self.stats = {
             'total_words': 0,
@@ -1171,7 +1275,7 @@ class JapaneseVocabPipeline:
             'chiettu_found': 0,
             'skipped_cached': 0,
         }
-    
+
     def _load_checkpoint(self):
         """Load processed entries from checkpoint"""
         if self.checkpoint_file.exists():
@@ -1183,7 +1287,7 @@ class JapaneseVocabPipeline:
             except Exception as e:
                 print(f"Warning: Could not load checkpoint: {e}")
                 self.processed = set()
-    
+
     def _save_checkpoint(self):
         """Save checkpoint to file"""
         try:
@@ -1194,62 +1298,73 @@ class JapaneseVocabPipeline:
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Warning: Could not save checkpoint: {e}")
-    
+
     def _get_entry_key(self, entry: VocabEntry) -> str:
         """Generate unique key for an entry"""
         return f"{entry.chapter}::{entry.word}::{entry.meaning_vi}"
-    
+
     def clear_checkpoint(self):
         """Clear checkpoint to start fresh"""
         if self.checkpoint_file.exists():
             self.checkpoint_file.unlink()
         self.processed = set()
         print("Checkpoint cleared")
-    
-    def run(self, 
+
+    def run(self,
             enrich_english: bool = True,
             generate_audio: bool = True,
             generate_pitch: bool = True,
             generate_stroke: bool = True,
+            generate_example: bool = True,
             rate_limit_delay: float = 0.5,
-            force_restart: bool = False):
+            force_restart: bool = False,
+            offline: bool = False,
+            verbose: bool = False):
         """Run the full pipeline"""
-        
+
+        self.offline = offline
+        self.verbose = verbose
+        self.generate_example = generate_example
+
         if force_restart:
             self.clear_checkpoint()
-        
+
         print("=" * 60)
         print("JAPANESE VOCABULARY ANKI DECK GENERATOR")
         print("=" * 60)
-        
+        if offline:
+            print("[MODE] Offline - no API calls")
+        if verbose:
+            print("[MODE] Verbose output enabled")
+
         # Phase 1: Parse EPUB
         print("\n[Phase 1] Parsing EPUB...")
         chapters = self.parser.parse()
         self.stats['chapters'] = len(chapters)
         print(f"Found {len(chapters)} chapters")
-        
+
         # Phase 2: Enrich and generate
         print("\n[Phase 2] Enriching vocabulary...")
-        
+
         for chapter_name, entries in chapters.items():
             print(f"\n  Processing: {chapter_name} ({len(entries)} words)")
-            
+
             for i, entry in enumerate(entries):
                 entry_key = self._get_entry_key(entry)
-                
+
                 # Skip if already processed
                 if entry_key in self.processed:
                     self.stats['skipped_cached'] += 1
                     # Still add to deck (without re-enriching)
                     self.deck_generator.add_entry(entry, chapter_name)
                     continue
-                
+
                 self.stats['total_words'] += 1
-                
+
                 # Progress indicator
                 if (i + 1) % 20 == 0:
                     print(f"    {i + 1}/{len(entries)} processed...")
-                
+
                 # Enrich entry
                 self._enrich_entry(
                     entry,
@@ -1258,29 +1373,29 @@ class JapaneseVocabPipeline:
                     generate_pitch=generate_pitch,
                     generate_stroke=generate_stroke,
                 )
-                
+
                 # Add to deck
                 self.deck_generator.add_entry(entry, chapter_name)
-                
+
                 # Mark as processed & save checkpoint
                 self.processed.add(entry_key)
-                
+
                 # Save checkpoint every 10 entries
                 if len(self.processed) % 10 == 0:
                     self._save_checkpoint()
-                
+
                 # Rate limiting for API calls
                 if enrich_english or generate_audio:
                     time.sleep(rate_limit_delay)
-        
+
         # Final checkpoint save
         self._save_checkpoint()
-        
+
         # Phase 3: Export
         print("\n[Phase 3] Exporting Anki deck...")
         output_path = self.output_dir / "japanese_vocabulary.apkg"
         self.deck_generator.export(str(output_path))
-        
+
         # Print stats
         print("\n" + "=" * 60)
         print("GENERATION COMPLETE")
@@ -1297,34 +1412,37 @@ class JapaneseVocabPipeline:
         print(f"Chiết tự found: {self.stats['chiettu_found']}")
         print(f"\nOutput: {output_path}")
         print(f"Checkpoint: {self.checkpoint_file}")
-        
+
         return str(output_path)
-    
+
     def _enrich_entry(self, entry: VocabEntry,
                       enrich_english: bool,
                       generate_audio: bool,
                       generate_pitch: bool,
                       generate_stroke: bool):
         """Enrich a single vocabulary entry"""
-        
+
+        if self.verbose:
+            print(f"      → {entry.word} ({entry.reading})")
+
         # Kanji database - full info including chiết tự
         kanji_info = KanjiDB.get_word_info(entry.word)
-        
+
         # Hán Việt from kanji_info
         if kanji_info['han_viet']:
             entry.han_viet = ' '.join(kanji_info['han_viet'])
             self.stats['hanviet_found'] += 1
-        
+
         # Pinyin
         if kanji_info['pinyin']:
             entry.kanji_pinyin = ', '.join(kanji_info['pinyin'])
-        
+
         # Kun/On readings
         if kanji_info['kun']:
             entry.kanji_kun = ' | '.join(kanji_info['kun'])
         if kanji_info['on']:
             entry.kanji_on = ' | '.join(kanji_info['on'])
-        
+
         # Từ ghép (compound words)
         if kanji_info['tu_ghep']:
             tu_ghep_html = []
@@ -1334,19 +1452,19 @@ class JapaneseVocabPipeline:
                 else:
                     tu_ghep_html.append(str(tg))
             entry.kanji_tu_ghep = ' • '.join(tu_ghep_html)
-        
+
         # Chi tiết chiết tự
         if kanji_info['chi_tiet']:
             entry.kanji_chi_tiet = '<br><br>'.join(kanji_info['chi_tiet'][:2])
             self.stats['chiettu_found'] += 1
-        
+
         # Radical info
         for char in entry.word:
             radical_info = RadicalDB.identify_radical(char)
             if radical_info:
                 entry.radical_info = f"{radical_info.get('radical', char)} ({radical_info.get('name_vn', '')} - {radical_info.get('name_en', '')})"
                 break
-        
+
         # Frequency info
         freq_info = KanjiFrequencyDB.get_word_frequency(entry.word)
         if freq_info:
@@ -1354,36 +1472,37 @@ class JapaneseVocabPipeline:
             rank = freq_info['rank']
             kanji = freq_info['kanji']
             entry.frequency_info = f'<span class="freq-{tier}">{kanji} [{tier} #{rank}]</span>'
-        
-        # Example sentences (O(1) lookup)
-        examples = ExampleSentencesDB.get_examples(entry.word, limit=2)
-        if examples:
-            entry.examples = "<br>".join(examples)
-        
-        # English meaning (API call)
-        if enrich_english:
+
+        # Example sentences - offline mode skips API fallback
+        if self.generate_example:
+            examples = ExampleSentencesDB.get_examples(entry.word, limit=2, offline=self.offline)
+            if examples:
+                entry.examples = "<br>".join(examples)
+
+        # English meaning (API call) - skip in offline mode
+        if enrich_english and not self.offline:
             try:
                 entry.meaning_en = JishoAPI.get_english_meaning(entry.word)
             except:
                 pass
-        
-        # Pitch accent
+
+        # Pitch accent - offline mode uses local DB only
         if generate_pitch:
-            pattern, morae = PitchAccentAPI.get_pitch_pattern(entry.word, entry.reading)
+            pattern, morae = PitchAccentAPI.get_pitch_pattern(entry.word, entry.reading, offline=self.offline)
             entry.pitch_pattern = pattern
             if pattern != '?':
                 self.stats['pitch_found'] += 1
             entry.pitch_svg = PitchDiagramGenerator.generate_svg(entry.reading, pattern, morae)
-        
+
         # Stroke order (only for single kanji) - with cache
         if generate_stroke and len(entry.word) == 1:
             stroke_cache_file = self.stroke_dir / f"{ord(entry.word)}.svg"
-            
+
             if stroke_cache_file.exists():
                 # Load from cache
                 entry.stroke_order_svg = stroke_cache_file.read_text(encoding='utf-8')
                 self.stats['stroke_cached'] += 1
-            else:
+            elif not self.offline:
                 try:
                     svg = StrokeOrderAPI.get_stroke_order_svg(entry.word)
                     if svg:
@@ -1393,19 +1512,20 @@ class JapaneseVocabPipeline:
                         self.stats['stroke_generated'] += 1
                 except:
                     pass
-        
+
         # Audio - check if already exists
         if generate_audio:
             audio_filename = f"{hashlib.md5(entry.word.encode()).hexdigest()[:8]}.mp3"
             audio_path = self.audio_dir / audio_filename
-            
+
             if audio_path.exists():
                 # Audio already exists, skip generation
                 entry.audio_file = str(audio_path)
                 self.stats['audio_cached'] += 1
-            elif TTSGenerator.generate_audio(entry.word, str(audio_path)):
-                entry.audio_file = str(audio_path)
-                self.stats['audio_generated'] += 1
+            elif not self.offline:
+                if TTSGenerator.generate_audio(entry.word, str(audio_path)):
+                    entry.audio_file = str(audio_path)
+                    self.stats['audio_generated'] += 1
 
 
 # =============================================================================
@@ -1415,7 +1535,7 @@ class JapaneseVocabPipeline:
 def main():
     """Main entry point"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Generate Anki deck from Japanese vocabulary EPUB')
     parser.add_argument('epub_path', help='Path to EPUB file')
     parser.add_argument('-o', '--output', default='./output', help='Output directory')
@@ -1423,19 +1543,25 @@ def main():
     parser.add_argument('--no-audio', action='store_true', help='Skip audio generation')
     parser.add_argument('--no-pitch', action='store_true', help='Skip pitch diagrams')
     parser.add_argument('--no-stroke', action='store_true', help='Skip stroke order')
+    parser.add_argument('--no-example', action='store_true', help='Skip example sentences')
     parser.add_argument('--delay', type=float, default=0.5, help='API rate limit delay (seconds)')
     parser.add_argument('--force-restart', action='store_true', help='Clear checkpoint and start fresh')
-    
+    parser.add_argument('--offline', action='store_true', help='No API calls, use local data only')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Print detailed progress')
+
     args = parser.parse_args()
-    
+
     pipeline = JapaneseVocabPipeline(args.epub_path, args.output)
     pipeline.run(
         enrich_english=not args.no_english,
         generate_audio=not args.no_audio,
         generate_pitch=not args.no_pitch,
         generate_stroke=not args.no_stroke,
+        generate_example=not args.no_example,
         rate_limit_delay=args.delay,
         force_restart=args.force_restart,
+        offline=args.offline,
+        verbose=args.verbose,
     )
 
 
