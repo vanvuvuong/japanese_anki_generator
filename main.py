@@ -274,6 +274,7 @@ class JishoAPI:
         return {}
 
     _english_cache_dir: Path = None
+    last_api_called: bool = False
 
     @classmethod
     def _init_cache(cls):
@@ -285,14 +286,17 @@ class JishoAPI:
     def get_english_meaning(cls, word: str) -> str:
         """Get English meaning from Jisho with cache"""
         cls._init_cache()
+        cls.last_api_called = False
 
         # Check cache
         word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
         cache_file = cls._english_cache_dir / f"{word_hash}.txt"
         if cache_file.exists():
-            return cache_file.read_text(encoding='utf-8')
+            cached = cache_file.read_text(encoding='utf-8')
+            return "" if cached == "_EMPTY_" else cached
 
         # Fetch from API
+        cls.last_api_called = True
         data = cls.lookup(word)
         meaning = ""
         if data and 'senses' in data:
@@ -302,9 +306,8 @@ class JishoAPI:
                     meanings.extend(sense['english_definitions'][:3])
             meaning = "; ".join(meanings)
 
-        # Save to cache
-        if meaning:
-            cache_file.write_text(meaning, encoding='utf-8')
+        # Save to cache (including empty to avoid re-fetching)
+        cache_file.write_text(meaning if meaning else "_EMPTY_", encoding='utf-8')
 
         return meaning
 
@@ -315,6 +318,7 @@ class PitchAccentAPI:
     PITCH_DB: Dict[str, Tuple[str, List[str]]] = {}
     _loaded = False
     _cache_dir: Path = None
+    last_api_called: bool = False
 
     @classmethod
     def _load(cls):
@@ -342,6 +346,7 @@ class PitchAccentAPI:
     def get_pitch_pattern(cls, word: str, reading: str, offline: bool = False) -> Tuple[str, List[str]]:
         """Get pitch pattern for a word"""
         cls._load()
+        cls.last_api_called = False
 
         # 1. Check local DB
         if word in cls.PITCH_DB:
@@ -365,15 +370,15 @@ class PitchAccentAPI:
             return ('?', morae)
 
         # 4. Fetch from Jisho API
+        cls.last_api_called = True
         pattern = cls._fetch_from_jisho(word, reading)
 
-        # 5. Save to cache
-        if pattern != '?':
-            try:
-                with open(cache_file, 'w', encoding='utf-8') as f:
-                    json.dump({'word': word, 'reading': reading, 'pattern': pattern}, f)
-            except:
-                pass
+        # 5. Save to cache (including '?' to avoid re-fetching)
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump({'word': word, 'reading': reading, 'pattern': pattern}, f)
+        except:
+            pass
 
         return (pattern, morae)
 
@@ -703,6 +708,7 @@ class ExampleSentencesDB:
     SENTENCES: Dict[str, List[List[str]]] = {}
     _loaded = False
     _cache_dir: Path = None
+    last_api_called: bool = False
 
     @classmethod
     def _load(cls):
@@ -725,6 +731,7 @@ class ExampleSentencesDB:
     def get_examples(cls, word: str, limit: int = 2, offline: bool = False) -> List[str]:
         """Get example sentences for a word"""
         cls._load()
+        cls.last_api_called = False
 
         if word in cls.SENTENCES:
             examples = cls.SENTENCES[word][:limit]
@@ -747,10 +754,11 @@ class ExampleSentencesDB:
             return []
 
         # Fetch from Tatoeba API
+        cls.last_api_called = True
         examples = cls._fetch_tatoeba(word, limit)
 
-        # Save to cache
-        if examples and cache_file:
+        # Save to cache (including empty to avoid re-fetching)
+        if cache_file:
             try:
                 with open(cache_file, 'w', encoding='utf-8') as f:
                     json.dump(examples, f, ensure_ascii=False)
@@ -1305,9 +1313,9 @@ class JapaneseVocabPipeline:
         except Exception as e:
             print(f"Warning: Could not save checkpoint: {e}")
 
-    def _get_entry_key(self, entry: VocabEntry) -> str:
+    def _get_entry_key(self, entry: VocabEntry, chapter: str = "") -> str:
         """Generate unique key for an entry"""
-        return f"{entry.chapter}::{entry.word}::{entry.meaning_vi}"
+        return f"{entry.word}::{entry.reading}::{entry.meaning_vi}"
 
     def clear_checkpoint(self):
         """Clear checkpoint to start fresh"""
@@ -1329,6 +1337,7 @@ class JapaneseVocabPipeline:
         """Run the full pipeline"""
 
         self.offline = offline
+        self._last_api_called = False
         self.verbose = verbose
         self.generate_example = generate_example
 
@@ -1356,22 +1365,13 @@ class JapaneseVocabPipeline:
             print(f"\n  Processing: {chapter_name} ({len(entries)} words)")
 
             for i, entry in enumerate(entries):
-                entry_key = self._get_entry_key(entry)
-
-                # Skip if already processed
-                if entry_key in self.processed:
-                    self.stats['skipped_cached'] += 1
-                    # Still add to deck (without re-enriching)
-                    self.deck_generator.add_entry(entry, chapter_name)
-                    continue
-
                 self.stats['total_words'] += 1
 
                 # Progress indicator
                 if (i + 1) % 20 == 0:
                     print(f"    {i + 1}/{len(entries)} processed...")
 
-                # Enrich entry
+                # Enrich entry (individual APIs have their own cache)
                 self._enrich_entry(
                     entry,
                     enrich_english=enrich_english,
@@ -1383,19 +1383,10 @@ class JapaneseVocabPipeline:
                 # Add to deck
                 self.deck_generator.add_entry(entry, chapter_name)
 
-                # Mark as processed & save checkpoint
-                self.processed.add(entry_key)
-
-                # Save checkpoint every 10 entries
-                if len(self.processed) % 10 == 0:
-                    self._save_checkpoint()
-
-                # Rate limiting for API calls
-                if enrich_english or generate_audio:
+                # Rate limiting only when API was actually called
+                if self._last_api_called:
                     time.sleep(rate_limit_delay)
 
-        # Final checkpoint save
-        self._save_checkpoint()
 
         # Phase 3: Export
         print("\n[Phase 3] Exporting Anki deck...")
@@ -1408,7 +1399,6 @@ class JapaneseVocabPipeline:
         print("=" * 60)
         print(f"Total chapters: {self.stats['chapters']}")
         print(f"Total words processed: {self.stats['total_words']}")
-        print(f"Skipped (cached): {self.stats['skipped_cached']}")
         print(f"Audio generated: {self.stats['audio_generated']}")
         print(f"Audio cached (skipped): {self.stats['audio_cached']}")
         print(f"Stroke generated: {self.stats['stroke_generated']}")
@@ -1428,8 +1418,11 @@ class JapaneseVocabPipeline:
                       generate_stroke: bool):
         """Enrich a single vocabulary entry"""
 
+        self._last_api_called = False
+        api_calls = []
+
         if self.verbose:
-            print(f"      → {entry.word} ({entry.reading})")
+            print(f"      → {entry.word} ({entry.reading})", end="")
 
         # Kanji database - full info including chiết tự
         kanji_info = KanjiDB.get_word_info(entry.word)
@@ -1482,6 +1475,9 @@ class JapaneseVocabPipeline:
         # Example sentences - offline mode skips API fallback
         if self.generate_example:
             examples = ExampleSentencesDB.get_examples(entry.word, limit=2, offline=self.offline)
+            if ExampleSentencesDB.last_api_called:
+                self._last_api_called = True
+                api_calls.append('EX')
             if examples:
                 entry.examples = "<br>".join(examples)
 
@@ -1489,12 +1485,18 @@ class JapaneseVocabPipeline:
         if enrich_english and not self.offline:
             try:
                 entry.meaning_en = JishoAPI.get_english_meaning(entry.word)
+                if JishoAPI.last_api_called:
+                    self._last_api_called = True
+                    api_calls.append('EN')
             except:
                 pass
 
         # Pitch accent - offline mode uses local DB only
         if generate_pitch:
             pattern, morae = PitchAccentAPI.get_pitch_pattern(entry.word, entry.reading, offline=self.offline)
+            if PitchAccentAPI.last_api_called:
+                self._last_api_called = True
+                api_calls.append('PITCH')
             entry.pitch_pattern = pattern
             if pattern != '?':
                 self.stats['pitch_found'] += 1
@@ -1510,6 +1512,8 @@ class JapaneseVocabPipeline:
                 self.stats['stroke_cached'] += 1
             elif not self.offline:
                 try:
+                    self._last_api_called = True
+                    api_calls.append('STROKE')
                     svg = StrokeOrderAPI.get_stroke_order_svg(entry.word)
                     if svg:
                         entry.stroke_order_svg = svg
@@ -1529,9 +1533,18 @@ class JapaneseVocabPipeline:
                 entry.audio_file = str(audio_path)
                 self.stats['audio_cached'] += 1
             elif not self.offline:
+                self._last_api_called = True
+                api_calls.append('AUDIO')
                 if TTSGenerator.generate_audio(entry.word, str(audio_path)):
                     entry.audio_file = str(audio_path)
                     self.stats['audio_generated'] += 1
+
+        # Debug: show which APIs were called
+        if self.verbose:
+            if api_calls:
+                print(f" [API: {','.join(api_calls)}]")
+            else:
+                print(f" [cached]")
 
 
 # =============================================================================

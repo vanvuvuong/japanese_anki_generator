@@ -1,3 +1,4 @@
+tmp/
 output/
 *.epub
 # Created by https://www.toptal.com/developers/gitignore/api/python,venv,virtualenv,visualstudio,visualstudiocode,pycharm+all,sublimetext,vim
