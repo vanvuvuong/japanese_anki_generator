@@ -1,5 +1,7 @@
 # 📚 Japanese Vocabulary Anki Deck Generator
 
+> Awesome AI Assistant: Claude Opus 4.5 by Anthropic
+
 Tạo Anki deck từ EPUB tiếng Nhật với đầy đủ enrichment.
 
 ## 🔧 Cài đặt
@@ -27,11 +29,11 @@ python3 main.py sach.epub -o ./output --force-restart
 
 ### Bước 1: Tìm thư mục collection.media
 
-| OS | Đường dẫn |
-|----|-----------|
-| Windows | `%APPDATA%\Anki2\<profile>\collection.media\` |
-| macOS | `~/Library/Application Support/Anki2/<profile>/collection.media/` |
-| Linux | `~/.local/share/Anki2/<profile>/collection.media/` |
+| OS      | Đường dẫn                                                         |
+| ------- | ----------------------------------------------------------------- |
+| Windows | `%APPDATA%\Anki2\<profile>\collection.media\`                     |
+| macOS   | `~/Library/Application Support/Anki2/<profile>/collection.media/` |
+| Linux   | `~/.local/share/Anki2/<profile>/collection.media/`                |
 
 ### Bước 2: Copy audio
 
@@ -59,11 +61,11 @@ data/
 
 ## Options
 
-| Flag | Mô tả |
-|------|-------|
-| `--no-english` | Bỏ lookup tiếng Anh |
-| `--no-audio` | Không generate audio |
-| `--no-pitch` | Không generate pitch diagram |
-| `--no-stroke` | Không generate stroke order |
-| `--delay N` | Delay API calls (giây) |
-| `--force-restart` | Xóa checkpoint, chạy lại |
+| Flag              | Mô tả                        |
+| ----------------- | ---------------------------- |
+| `--no-english`    | Bỏ lookup tiếng Anh          |
+| `--no-audio`      | Không generate audio         |
+| `--no-pitch`      | Không generate pitch diagram |
+| `--no-stroke`     | Không generate stroke order  |
+| `--delay N`       | Delay API calls (giây)       |
+| `--force-restart` | Xóa checkpoint, chạy lại     |

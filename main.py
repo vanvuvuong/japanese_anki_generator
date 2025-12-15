@@ -896,17 +896,21 @@ class AnkiDeckGenerator:
 .meaning-vi {
     color: #27ae60;
     font-weight: 500;
+    font-size: 20px;
+    margin-bottom: 5px;
 }
 
 .meaning-en {
     color: #3498db;
+    margin-bottom: 5px;
 }
 
 .hanviet {
     font-size: 18px;
     color: #e74c3c;
-    margin: 10px 0;
-    font-style: italic;
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px dashed #ddd;
 }
 
 .pitch-diagram {
@@ -1016,6 +1020,10 @@ class AnkiDeckGenerator:
     color: #bb86fc;
 }
 
+.night_mode .hanviet {
+    border-bottom-color: #555;
+}
+
 .night_mode .kanji-pinyin {
     color: #ffb74d;
 }
@@ -1108,9 +1116,19 @@ hr {
 
 <hr>
 
-<div class="meaning meaning-vi">🇻🇳 {{MeaningVI}}</div>
-{{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
-{{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+<div class="kanji-detail">
+    <div class="meaning meaning-vi">🇻🇳 {{MeaningVI}}</div>
+    {{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
+    {{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+    {{#KanjiChiTiet}}
+    <div class="kanji-detail-title">📚 Chiết tự Hán</div>
+    {{#KanjiPinyin}}<div class="kanji-pinyin">🔊 Pinyin: {{KanjiPinyin}}</div>{{/KanjiPinyin}}
+    {{#KanjiKun}}<div class="kanji-reading">訓: {{KanjiKun}}</div>{{/KanjiKun}}
+    {{#KanjiOn}}<div class="kanji-reading">音: {{KanjiOn}}</div>{{/KanjiOn}}
+    {{#KanjiTuGhep}}<div class="kanji-compound">📝 Từ ghép: {{KanjiTuGhep}}</div>{{/KanjiTuGhep}}
+    <div class="kanji-etymology">{{KanjiChiTiet}}</div>
+    {{/KanjiChiTiet}}
+</div>
 
 {{#StrokeOrder}}
 <hr>
@@ -1120,18 +1138,6 @@ hr {
 {{#RadicalInfo}}
 <div class="radical">Bộ thủ: {{RadicalInfo}}</div>
 {{/RadicalInfo}}
-
-{{#KanjiChiTiet}}
-<hr>
-<div class="kanji-detail">
-    <div class="kanji-detail-title">📚 Chiết tự Hán</div>
-    {{#KanjiPinyin}}<div class="kanji-pinyin">🔊 Pinyin: {{KanjiPinyin}}</div>{{/KanjiPinyin}}
-    {{#KanjiKun}}<div class="kanji-reading">訓: {{KanjiKun}}</div>{{/KanjiKun}}
-    {{#KanjiOn}}<div class="kanji-reading">音: {{KanjiOn}}</div>{{/KanjiOn}}
-    {{#KanjiTuGhep}}<div class="kanji-compound">📝 Từ ghép: {{KanjiTuGhep}}</div>{{/KanjiTuGhep}}
-    <div class="kanji-etymology">{{KanjiChiTiet}}</div>
-</div>
-{{/KanjiChiTiet}}
 
 {{#Examples}}
 <hr>
