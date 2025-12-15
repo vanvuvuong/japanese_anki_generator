@@ -833,7 +833,7 @@ class KanjiDB:
                 if info.get('tu_ghep'):
                     result['tu_ghep'].extend(info['tu_ghep'][:2])
                 if info.get('chi_tiet'):
-                    result['chi_tiet'].append(f"【{char}】{info['chi_tiet'][:200]}")
+                    result['chi_tiet'].append(f"【{char}】{info['chi_tiet']}")
 
         return result
 
