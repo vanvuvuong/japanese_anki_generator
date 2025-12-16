@@ -81,6 +81,13 @@ class VocabEntry:
     kanji_tu_ghep: str = ""            # Compound words HTML
     kanji_chi_tiet: str = ""           # Etymology explanation
     frequency_info: str = ""           # Frequency tier [S #8]
+    # New fields
+    jlpt_level: str = ""               # JLPT level (N5-N1)
+    word_type: str = ""                # Part of speech (Noun, Verb, Adj, etc.)
+    furigana: str = ""                 # HTML ruby text
+    conjugations: str = ""             # Verb conjugations HTML
+    synonyms: str = ""                 # Similar words
+    antonyms: str = ""                 # Opposite words
 
     def generate_takoboto_link(self):
         """Generate Takoboto dictionary link"""
@@ -259,20 +266,8 @@ class JishoAPI:
 
     BASE_URL = "https://jisho.org/api/v1/search/words"
 
-    @staticmethod
-    def lookup(word: str) -> Dict:
-        """Look up a word in Jisho"""
-        try:
-            url = f"{JishoAPI.BASE_URL}?keyword={urllib.parse.quote(word)}"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('data'):
-                    return data['data'][0]
-        except Exception as e:
-            print(f"Jisho lookup error for {word}: {e}")
-        return {}
-
+    # Cache for full Jisho responses
+    _jisho_cache_dir: Path = None
     _english_cache_dir: Path = None
     last_api_called: bool = False
 
@@ -281,6 +276,52 @@ class JishoAPI:
         if cls._english_cache_dir is None:
             cls._english_cache_dir = Path(__file__).parent / "data" / "english_cache"
             cls._english_cache_dir.mkdir(exist_ok=True)
+        if cls._jisho_cache_dir is None:
+            cls._jisho_cache_dir = Path(__file__).parent / "data" / "jisho_cache"
+            cls._jisho_cache_dir.mkdir(exist_ok=True)
+
+    @classmethod
+    def lookup(cls, word: str, use_cache: bool = True) -> Dict:
+        """Look up a word in Jisho with caching"""
+        cls._init_cache()
+
+        word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
+        cache_file = cls._jisho_cache_dir / f"{word_hash}.json"
+
+        # Check cache
+        if use_cache and cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+
+        # Fetch from API
+        cls.last_api_called = True
+        try:
+            url = f"{cls.BASE_URL}?keyword={urllib.parse.quote(word)}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('data'):
+                    result = data['data'][0]
+                    # Cache result
+                    try:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
+                            json.dump(result, f, ensure_ascii=False)
+                    except:
+                        pass
+                    return result
+        except Exception as e:
+            print(f"Jisho lookup error for {word}: {e}")
+
+        # Cache empty result
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+        except:
+            pass
+        return {}
 
     @classmethod
     def get_english_meaning(cls, word: str) -> str:
@@ -288,15 +329,14 @@ class JishoAPI:
         cls._init_cache()
         cls.last_api_called = False
 
-        # Check cache
+        # Check old-style cache first (for backwards compatibility)
         word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
         cache_file = cls._english_cache_dir / f"{word_hash}.txt"
         if cache_file.exists():
             cached = cache_file.read_text(encoding='utf-8')
             return "" if cached == "_EMPTY_" else cached
 
-        # Fetch from API
-        cls.last_api_called = True
+        # Get from full Jisho data
         data = cls.lookup(word)
         meaning = ""
         if data and 'senses' in data:
@@ -310,6 +350,75 @@ class JishoAPI:
         cache_file.write_text(meaning if meaning else "_EMPTY_", encoding='utf-8')
 
         return meaning
+
+    @classmethod
+    def get_word_type(cls, word: str) -> str:
+        """Get part of speech from Jisho. Returns formatted string."""
+        data = cls.lookup(word)
+        if not data or 'senses' not in data:
+            return ""
+
+        # Collect unique parts of speech
+        pos_set = set()
+        for sense in data.get('senses', [])[:2]:
+            for pos in sense.get('parts_of_speech', []):
+                pos_set.add(pos)
+
+        if not pos_set:
+            return ""
+
+        # Translate common types to Vietnamese
+        translations = {
+            'Noun': 'Danh từ',
+            'Verb': 'Động từ',
+            'I-adjective': 'Tính từ -い',
+            'Na-adjective': 'Tính từ -な',
+            'Adverb': 'Trạng từ',
+            'Suru verb': 'Động từ する',
+            'Godan verb': 'Động từ Godan',
+            'Ichidan verb': 'Động từ Ichidan',
+            'Intransitive verb': 'Tự động từ',
+            'Transitive verb': 'Tha động từ',
+            'Expression': 'Thành ngữ',
+            'Particle': 'Trợ từ',
+            'Conjunction': 'Liên từ',
+            'Counter': 'Trợ số từ',
+            'Suffix': 'Hậu tố',
+            'Prefix': 'Tiền tố',
+        }
+
+        result = []
+        for pos in pos_set:
+            # Try to translate, otherwise use original
+            for en, vi in translations.items():
+                if en.lower() in pos.lower():
+                    result.append(vi)
+                    break
+            else:
+                result.append(pos)
+
+        return ' • '.join(result[:3])  # Limit to 3
+
+    @classmethod
+    def get_synonyms_antonyms(cls, word: str) -> Tuple[str, str]:
+        """Get synonyms and antonyms from Jisho. Returns (synonyms, antonyms)."""
+        data = cls.lookup(word)
+        if not data or 'senses' not in data:
+            return "", ""
+
+        synonyms = []
+        antonyms = []
+
+        for sense in data.get('senses', []):
+            # See also = similar words
+            see_also = sense.get('see_also', [])
+            synonyms.extend(see_also[:3])
+
+            # Antonyms (less common in Jisho)
+            ant = sense.get('antonyms', [])
+            antonyms.extend(ant[:3])
+
+        return ' • '.join(synonyms[:4]), ' • '.join(antonyms[:4])
 
 
 class PitchAccentAPI:
@@ -565,29 +674,45 @@ class StrokeOrderAPI:
 
 
 class TTSGenerator:
-    """Generate audio using TTS"""
+    """Generate audio using Microsoft Edge TTS (better Japanese pronunciation)"""
+
+    # Japanese voice options:
+    # ja-JP-NanamiNeural (female, natural)
+    # ja-JP-KeitaNeural (male, natural)
+    VOICE = "ja-JP-NanamiNeural"
 
     @staticmethod
     def generate_audio(text: str, output_path: str, lang: str = 'ja') -> bool:
-        """Generate TTS audio file using gTTS"""
+        """Generate TTS audio file using edge-tts"""
         try:
-            from gtts import gTTS
-            tts = gTTS(text=text, lang=lang)
-            tts.save(output_path)
+            import edge_tts
+            import asyncio
+
+            async def _generate():
+                communicate = edge_tts.Communicate(text, TTSGenerator.VOICE)
+                await communicate.save(output_path)
+
+            asyncio.run(_generate())
             return True
         except ImportError:
-            print("Installing gTTS...")
-            os.system("pip install gTTS --break-system-packages")
+            print("Installing edge-tts...")
+            os.system("pip install edge-tts --break-system-packages")
             try:
-                from gtts import gTTS
-                tts = gTTS(text=text, lang=lang)
-                tts.save(output_path)
+                import edge_tts
+                import asyncio
+
+                async def _generate():
+                    communicate = edge_tts.Communicate(text, TTSGenerator.VOICE)
+                    await communicate.save(output_path)
+
+                asyncio.run(_generate())
                 return True
             except Exception as e:
                 print(f"TTS error: {e}")
                 return False
         except Exception as e:
             print(f"TTS error for {text}: {e}")
+            return False
             return False
 
 
@@ -700,6 +825,228 @@ class KanjiFrequencyDB:
             if char in cls.FREQ:
                 return {**cls.FREQ[char], 'kanji': char}
         return {}
+
+
+# =============================================================================
+# JLPT LEVEL DATABASE
+# =============================================================================
+
+class JLPTDB:
+    """JLPT level database - O(1) lookup"""
+
+    LEVELS: Dict[str, str] = {}
+    _loaded = False
+
+    @classmethod
+    def _load(cls):
+        if cls._loaded:
+            return
+
+        json_path = Path(__file__).parent / "data" / "jlpt.json"
+        if json_path.exists():
+            with open(json_path, 'r', encoding='utf-8') as f:
+                cls.LEVELS = json.load(f)
+        cls._loaded = True
+
+    @classmethod
+    def get_level(cls, word: str) -> str:
+        """Get JLPT level for a word. Returns 'N5'-'N1' or ''"""
+        cls._load()
+        return cls.LEVELS.get(word, "")
+
+
+# =============================================================================
+# FURIGANA GENERATOR
+# =============================================================================
+
+class FuriganaGenerator:
+    """Generate HTML ruby text for furigana display - O(n)"""
+
+    @staticmethod
+    def generate(word: str, reading: str) -> str:
+        """Generate furigana HTML. Returns <ruby>漢字<rt>かんじ</rt></ruby>"""
+        # If word is all hiragana/katakana, no furigana needed
+        has_kanji = any('\u4e00' <= c <= '\u9fff' for c in word)
+        if not has_kanji:
+            return word
+
+        # Simple case: wrap entire word
+        # For complex cases with mixed kanji/kana, we'd need morphological analysis
+        return f'<ruby>{word}<rt>{reading}</rt></ruby>'
+
+    @staticmethod
+    def generate_per_char(word: str, reading: str) -> str:
+        """Try to generate per-character furigana (best effort)"""
+        # This is a simplified version - full implementation would need MeCab
+        has_kanji = any('\u4e00' <= c <= '\u9fff' for c in word)
+        if not has_kanji:
+            return word
+
+        # If single kanji, simple wrap
+        if len(word) == 1:
+            return f'<ruby>{word}<rt>{reading}</rt></ruby>'
+
+        # For compound words, wrap entire word (safe fallback)
+        return f'<ruby>{word}<rt>{reading}</rt></ruby>'
+
+
+# =============================================================================
+# VERB CONJUGATION
+# =============================================================================
+
+class VerbConjugator:
+    """Japanese verb conjugation - O(1) pattern matching"""
+
+    # Godan verb endings and their conjugations
+    GODAN_ENDINGS = {
+        'う': {'masu': 'います', 'te': 'って', 'ta': 'った', 'nai': 'わない', 'potential': 'える'},
+        'く': {'masu': 'きます', 'te': 'いて', 'ta': 'いた', 'nai': 'かない', 'potential': 'ける'},
+        'ぐ': {'masu': 'ぎます', 'te': 'いで', 'ta': 'いだ', 'nai': 'がない', 'potential': 'げる'},
+        'す': {'masu': 'します', 'te': 'して', 'ta': 'した', 'nai': 'さない', 'potential': 'せる'},
+        'つ': {'masu': 'ちます', 'te': 'って', 'ta': 'った', 'nai': 'たない', 'potential': 'てる'},
+        'ぬ': {'masu': 'にます', 'te': 'んで', 'ta': 'んだ', 'nai': 'なない', 'potential': 'ねる'},
+        'ぶ': {'masu': 'びます', 'te': 'んで', 'ta': 'んだ', 'nai': 'ばない', 'potential': 'べる'},
+        'む': {'masu': 'みます', 'te': 'んで', 'ta': 'んだ', 'nai': 'まない', 'potential': 'める'},
+        'る': {'masu': 'ります', 'te': 'って', 'ta': 'った', 'nai': 'らない', 'potential': 'れる'},
+    }
+
+    # Irregular verbs
+    IRREGULARS = {
+        'する': {'masu': 'します', 'te': 'して', 'ta': 'した', 'nai': 'しない', 'potential': 'できる', 'type': 'suru'},
+        '来る': {'masu': '来ます', 'te': '来て', 'ta': '来た', 'nai': '来ない', 'potential': '来られる', 'type': 'kuru'},
+        'くる': {'masu': 'きます', 'te': 'きて', 'ta': 'きた', 'nai': 'こない', 'potential': 'こられる', 'type': 'kuru'},
+        '行く': {'masu': '行きます', 'te': '行って', 'ta': '行った', 'nai': '行かない', 'potential': '行ける', 'type': 'iku'},
+        'いく': {'masu': 'いきます', 'te': 'いって', 'ta': 'いった', 'nai': 'いかない', 'potential': 'いける', 'type': 'iku'},
+        'ある': {'masu': 'あります', 'te': 'あって', 'ta': 'あった', 'nai': 'ない', 'potential': 'ありえる', 'type': 'aru'},
+    }
+
+    # Common ichidan (る) verbs that end in える/いる
+    ICHIDAN_COMMON = {
+        '食べる', '見る', '起きる', '寝る', '着る', '出る', '開ける', '閉める',
+        '教える', '考える', '答える', '忘れる', '覚える', '始める', '終わる',
+        'たべる', 'みる', 'おきる', 'ねる', 'きる', 'でる', 'あける', 'しめる',
+    }
+
+    @classmethod
+    def detect_verb_type(cls, word: str, word_type: str = "") -> str:
+        """Detect verb type: ichidan, godan, irregular, or not_verb"""
+        # Check if it's marked as a verb (English, Japanese, or Vietnamese)
+        verb_markers = ['Verb', '動詞', 'Động từ', 'verb']
+        if word_type and not any(m in word_type for m in verb_markers):
+            return 'not_verb'
+
+        # Check irregulars first
+        if word in cls.IRREGULARS:
+            return cls.IRREGULARS[word].get('type', 'irregular')
+
+        # Check if ends with する (suru compound)
+        if word.endswith('する'):
+            return 'suru'
+
+        # Detect from word_type string
+        ichidan_markers = ['Ichidan', 'ichidan', '一段']
+        godan_markers = ['Godan', 'godan', '五段']
+
+        if word_type:
+            if any(m in word_type for m in ichidan_markers):
+                return 'ichidan'
+            if any(m in word_type for m in godan_markers):
+                return 'godan'
+
+        # Check common ichidan verbs
+        if word in cls.ICHIDAN_COMMON:
+            return 'ichidan'
+
+        # Check ending
+        if not word:
+            return 'not_verb'
+
+        last_char = word[-1]
+
+        # Ichidan verbs end in る with え-row or い-row vowel before
+        if last_char == 'る' and len(word) >= 2:
+            prev_char = word[-2]
+            # え-row: え, け, せ, て, ね, へ, め, れ, げ, ぜ, で, べ, ぺ
+            e_row = 'えけせてねへめれげぜでべぺ'
+            # い-row: い, き, し, ち, に, ひ, み, り, ぎ, じ, ぢ, び, ぴ
+            i_row = 'いきしちにひみりぎじぢびぴ'
+            if prev_char in e_row or prev_char in i_row:
+                # Could be ichidan - but many are actually godan
+                # Default to ichidan for common patterns
+                return 'ichidan'
+
+        # Godan verbs end in う-row
+        if last_char in cls.GODAN_ENDINGS:
+            return 'godan'
+
+        return 'not_verb'
+
+    @classmethod
+    def conjugate(cls, word: str, reading: str = "", word_type: str = "") -> Dict[str, str]:
+        """Conjugate a verb. Returns dict with masu, te, ta, nai, potential forms"""
+        verb_type = cls.detect_verb_type(word, word_type)
+
+        if verb_type == 'not_verb':
+            return {}
+
+        # Handle irregulars
+        if word in cls.IRREGULARS:
+            return {k: v for k, v in cls.IRREGULARS[word].items() if k != 'type'}
+
+        # Handle する compounds
+        if verb_type == 'suru' and word.endswith('する'):
+            stem = word[:-2]
+            return {
+                'masu': f'{stem}します',
+                'te': f'{stem}して',
+                'ta': f'{stem}した',
+                'nai': f'{stem}しない',
+                'potential': f'{stem}できる',
+            }
+
+        if not word:
+            return {}
+
+        last_char = word[-1]
+        stem = word[:-1]
+
+        # Ichidan verbs - just drop る and add endings
+        if verb_type == 'ichidan':
+            return {
+                'masu': f'{stem}ます',
+                'te': f'{stem}て',
+                'ta': f'{stem}た',
+                'nai': f'{stem}ない',
+                'potential': f'{stem}られる',
+            }
+
+        # Godan verbs
+        if verb_type == 'godan' and last_char in cls.GODAN_ENDINGS:
+            endings = cls.GODAN_ENDINGS[last_char]
+            return {
+                'masu': f'{stem}{endings["masu"]}',
+                'te': f'{stem}{endings["te"]}',
+                'ta': f'{stem}{endings["ta"]}',
+                'nai': f'{stem}{endings["nai"]}',
+                'potential': f'{stem}{endings["potential"]}',
+            }
+
+        return {}
+
+    @classmethod
+    def format_conjugations(cls, word: str, reading: str = "", word_type: str = "") -> str:
+        """Format conjugations as HTML string"""
+        conj = cls.conjugate(word, reading, word_type)
+        if not conj:
+            return ""
+
+        parts = []
+        labels = {'masu': 'ます形', 'te': 'て形', 'ta': 'た形', 'nai': 'ない形', 'potential': '可能形'}
+        for key in ['masu', 'te', 'ta', 'nai', 'potential']:
+            if key in conj:
+                parts.append(f'{labels[key]}: {conj[key]}')
+
+        return ' | '.join(parts)
 
 
 class ExampleSentencesDB:
@@ -1060,21 +1407,103 @@ class AnkiDeckGenerator:
 
 /* Frequency tier badges */
 .frequency-info {
-    display: inline-block;
-    font-size: 12px;
-    font-weight: bold;
-    padding: 2px 8px;
-    border-radius: 10px;
+    font-size: 14px;
+    color: #8e44ad;
     margin: 5px 0;
 }
 
-.freq-S { background: #e74c3c; color: white; }
-.freq-A { background: #e67e22; color: white; }
-.freq-B { background: #f1c40f; color: #333; }
-.freq-C { background: #27ae60; color: white; }
-.freq-D { background: #95a5a6; color: white; }
+.freq-S { background: #e74c3c; color: white; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+.freq-A { background: #e67e22; color: white; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+.freq-B { background: #f1c40f; color: #333; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+.freq-C { background: #27ae60; color: white; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+.freq-D { background: #95a5a6; color: white; padding: 2px 8px; border-radius: 10px; font-weight: bold; }
 
+.night_mode .frequency-info { color: #bb86fc; }
 .night_mode .freq-B { color: #1a1a1a; }
+
+/* JLPT Level badges */
+.jlpt-level {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 2px 10px;
+    border-radius: 12px;
+    margin: 5px 0;
+}
+
+.jlpt-N5 { background: #27ae60; color: white; }
+.jlpt-N4 { background: #2ecc71; color: white; }
+.jlpt-N3 { background: #f39c12; color: white; }
+.jlpt-N2 { background: #e67e22; color: white; }
+.jlpt-N1 { background: #e74c3c; color: white; }
+
+/* Word type (part of speech) */
+.word-type {
+    font-size: 13px;
+    color: #8e44ad;
+    font-style: italic;
+    margin: 5px 0;
+}
+
+.night_mode .word-type {
+    color: #bb86fc;
+}
+
+/* Separator between meaning and chiết tự */
+.kanji-detail-separator {
+    border-top: 1px dashed #ccc;
+    margin: 10px 0;
+}
+
+.night_mode .kanji-detail-separator {
+    border-color: #555;
+}
+
+/* Furigana styling */
+ruby {
+    ruby-position: over;
+}
+
+ruby rt {
+    font-size: 0.6em;
+    color: #888;
+}
+
+.night_mode ruby rt {
+    color: #aaa;
+}
+
+/* Verb conjugations */
+.conjugations {
+    font-size: 13px;
+    color: #16a085;
+    margin: 8px 0;
+    padding: 8px;
+    background: #e8f6f3;
+    border-radius: 5px;
+}
+
+.night_mode .conjugations {
+    background: #1a332e;
+    color: #4db6ac;
+}
+
+/* Synonyms & Antonyms */
+.synonyms, .antonyms {
+    font-size: 13px;
+    margin: 5px 0;
+}
+
+.synonyms {
+    color: #2980b9;
+}
+
+.antonyms {
+    color: #c0392b;
+}
+
+.night_mode .synonyms { color: #64b5f6; }
+.night_mode .antonyms { color: #ef5350; }
 
 .tags {
     font-size: 12px;
@@ -1108,15 +1537,16 @@ hr {
 
         # Front template (Question) - pitch ở đây để học phát âm
         front_template = '''
-<div class="word">{{Word}}</div>
-{{#FrequencyInfo}}<div class="frequency-info">{{FrequencyInfo}}</div>{{/FrequencyInfo}}
+<div class="word">{{Furigana}}</div>
+{{#JLPTLevel}}<div class="jlpt-level jlpt-{{JLPTLevel}}">{{JLPTLevel}}</div>{{/JLPTLevel}}
 {{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
 {{#Audio}}{{Audio}}{{/Audio}}
 '''
 
         # Back template (Answer)
         back_template = '''
-<div class="word">{{Word}}</div>
+<div class="word">{{Furigana}}</div>
+{{#JLPTLevel}}<div class="jlpt-level jlpt-{{JLPTLevel}}">{{JLPTLevel}}</div>{{/JLPTLevel}}
 {{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
 <div class="romaji">{{Romaji}}</div>
 
@@ -1127,8 +1557,14 @@ hr {
 <div class="kanji-detail">
     <div class="meaning meaning-vi">🇻🇳 {{MeaningVI}}</div>
     {{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
+    {{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
     {{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+    {{#FrequencyInfo}}<div class="frequency-info">Tần suất: {{FrequencyInfo}}</div>{{/FrequencyInfo}}
+    {{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
+    {{#Synonyms}}<div class="synonyms">≈ Đồng nghĩa: {{Synonyms}}</div>{{/Synonyms}}
+    {{#Antonyms}}<div class="antonyms">≠ Trái nghĩa: {{Antonyms}}</div>{{/Antonyms}}
     {{#KanjiChiTiet}}
+    <div class="kanji-detail-separator"></div>
     <div class="kanji-detail-title">📚 Chiết tự Hán</div>
     {{#KanjiPinyin}}<div class="kanji-pinyin">🔊 Pinyin: {{KanjiPinyin}}</div>{{/KanjiPinyin}}
     {{#KanjiKun}}<div class="kanji-reading">訓: {{KanjiKun}}</div>{{/KanjiKun}}
@@ -1151,6 +1587,37 @@ hr {
 <hr>
 <div class="example">{{Examples}}</div>
 {{/Examples}}
+
+<div class="dictionary-link">
+    <a href="{{TakobotoLink}}" target="_blank">📖 Takoboto</a>
+</div>
+
+<div class="tags">{{Chapter}} / {{SubCategory}}</div>
+'''
+
+        # Reverse card template (Vietnamese → Japanese)
+        reverse_front = '''
+<div class="meaning meaning-vi" style="font-size: 28px;">🇻🇳 {{MeaningVI}}</div>
+{{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
+{{#JLPTLevel}}<div class="jlpt-level jlpt-{{JLPTLevel}}">{{JLPTLevel}}</div>{{/JLPTLevel}}
+'''
+
+        reverse_back = '''
+<div class="meaning meaning-vi" style="font-size: 28px;">🇻🇳 {{MeaningVI}}</div>
+{{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
+
+<hr>
+
+<div class="word">{{Furigana}}</div>
+{{#JLPTLevel}}<div class="jlpt-level jlpt-{{JLPTLevel}}">{{JLPTLevel}}</div>{{/JLPTLevel}}
+{{#PitchDiagram}}<div class="pitch-diagram">{{PitchDiagram}}</div>{{/PitchDiagram}}
+<div class="romaji">{{Romaji}}</div>
+
+{{#Audio}}{{Audio}}{{/Audio}}
+
+{{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
+{{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+{{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
 
 <div class="dictionary-link">
     <a href="{{TakobotoLink}}" target="_blank">📖 Takoboto</a>
@@ -1184,12 +1651,24 @@ hr {
                 {'name': 'Chapter'},
                 {'name': 'SubCategory'},
                 {'name': 'TakobotoLink'},
+                # New fields
+                {'name': 'JLPTLevel'},
+                {'name': 'WordType'},
+                {'name': 'Furigana'},
+                {'name': 'Conjugations'},
+                {'name': 'Synonyms'},
+                {'name': 'Antonyms'},
             ],
             templates=[
                 {
                     'name': 'Recognition',
                     'qfmt': front_template,
                     'afmt': back_template,
+                },
+                {
+                    'name': 'Production',
+                    'qfmt': reverse_front,
+                    'afmt': reverse_back,
                 },
             ],
             css=css,
@@ -1202,6 +1681,14 @@ hr {
             deck_id = self.DECK_ID_BASE + hash(chapter) % 1000000
             deck = genanki.Deck(deck_id, f"{self.deck_name}::{chapter}")
             self.decks[chapter] = deck
+
+        # Build tags
+        tags = [
+            entry.chapter.replace(' ', '_'),
+            entry.sub_category.replace(' ', '_') if entry.sub_category else '',
+        ]
+        if entry.jlpt_level:
+            tags.append(entry.jlpt_level)  # Add JLPT level as tag for filtering
 
         # Create note
         note = genanki.Note(
@@ -1228,11 +1715,15 @@ hr {
                 entry.chapter,
                 entry.sub_category,
                 entry.takoboto_link,
+                # New fields
+                entry.jlpt_level,
+                entry.word_type,
+                entry.furigana,
+                entry.conjugations,
+                entry.synonyms,
+                entry.antonyms,
             ],
-            tags=[
-                entry.chapter.replace(' ', '_'),
-                entry.sub_category.replace(' ', '_') if entry.sub_category else '',
-            ]
+            tags=tags
         )
 
         self.decks[chapter].add_note(note)
@@ -1464,13 +1955,40 @@ class JapaneseVocabPipeline:
                 entry.radical_info = f"{radical_info.get('radical', char)} ({radical_info.get('name_vn', '')} - {radical_info.get('name_en', '')})"
                 break
 
-        # Frequency info
-        freq_info = KanjiFrequencyDB.get_word_frequency(entry.word)
-        if freq_info:
-            tier = freq_info['tier']
-            rank = freq_info['rank']
-            kanji = freq_info['kanji']
-            entry.frequency_info = f'<span class="freq-{tier}">{kanji} [{tier} #{rank}]</span>'
+        # Frequency info - handle compound words (each kanji)
+        freq_parts = []
+        for char in entry.word:
+            if '\u4e00' <= char <= '\u9fff':  # Is kanji
+                freq = KanjiFrequencyDB.get_frequency(char)
+                if freq:
+                    tier = freq['tier']
+                    rank = freq['rank']
+                    freq_parts.append(f'<span class="freq-{tier}">{char} [{tier} #{rank}]</span>')
+        if freq_parts:
+            entry.frequency_info = ' '.join(freq_parts)
+
+        # === NEW ENRICHMENTS ===
+
+        # JLPT Level - O(1) lookup
+        entry.jlpt_level = JLPTDB.get_level(entry.word)
+        if not entry.jlpt_level:
+            # Try reading if word not found
+            entry.jlpt_level = JLPTDB.get_level(entry.reading)
+
+        # Furigana - O(n)
+        entry.furigana = FuriganaGenerator.generate(entry.word, entry.reading)
+
+        # Word type - from cached Jisho data, O(1) if cached
+        entry.word_type = JishoAPI.get_word_type(entry.word)
+
+        # Synonyms/Antonyms - from cached Jisho data, O(1) if cached
+        entry.synonyms, entry.antonyms = JishoAPI.get_synonyms_antonyms(entry.word)
+
+        # Verb conjugation - O(1) pattern matching
+        if entry.word_type and ('Động từ' in entry.word_type or 'Verb' in entry.word_type):
+            entry.conjugations = VerbConjugator.format_conjugations(entry.word, entry.reading, entry.word_type)
+
+        # === END NEW ENRICHMENTS ===
 
         # Example sentences - offline mode skips API fallback
         if self.generate_example:
@@ -1502,26 +2020,41 @@ class JapaneseVocabPipeline:
                 self.stats['pitch_found'] += 1
             entry.pitch_svg = PitchDiagramGenerator.generate_svg(entry.reading, pattern, morae)
 
-        # Stroke order (only for single kanji) - with cache
-        if generate_stroke and len(entry.word) == 1:
-            stroke_cache_file = self.stroke_dir / f"{ord(entry.word)}.svg"
+        # Stroke order - handle compound words (each kanji separately)
+        if generate_stroke:
+            stroke_svgs = []
+            stroke_api_called = False
+            for char in entry.word:
+                # Skip non-kanji (hiragana, katakana, punctuation)
+                if not ('\u4e00' <= char <= '\u9fff'):
+                    continue
 
-            if stroke_cache_file.exists():
-                # Load from cache
-                entry.stroke_order_svg = stroke_cache_file.read_text(encoding='utf-8')
-                self.stats['stroke_cached'] += 1
-            elif not self.offline:
-                try:
-                    self._last_api_called = True
-                    api_calls.append('STROKE')
-                    svg = StrokeOrderAPI.get_stroke_order_svg(entry.word)
-                    if svg:
-                        entry.stroke_order_svg = svg
-                        # Save to cache
-                        stroke_cache_file.write_text(svg, encoding='utf-8')
-                        self.stats['stroke_generated'] += 1
-                except:
-                    pass
+                stroke_cache_file = self.stroke_dir / f"{ord(char)}.svg"
+
+                if stroke_cache_file.exists():
+                    # Load from cache
+                    svg = stroke_cache_file.read_text(encoding='utf-8')
+                    stroke_svgs.append(svg)
+                    self.stats['stroke_cached'] += 1
+                elif not self.offline:
+                    try:
+                        self._last_api_called = True
+                        stroke_api_called = True
+                        svg = StrokeOrderAPI.get_stroke_order_svg(char)
+                        if svg:
+                            stroke_svgs.append(svg)
+                            # Save to cache
+                            stroke_cache_file.write_text(svg, encoding='utf-8')
+                            self.stats['stroke_generated'] += 1
+                    except:
+                        pass
+
+            if stroke_api_called:
+                api_calls.append('STROKE')
+
+            # Combine all stroke SVGs
+            if stroke_svgs:
+                entry.stroke_order_svg = ''.join(stroke_svgs)
 
         # Audio - check if already exists
         if generate_audio:

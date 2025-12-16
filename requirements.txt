@@ -6,8 +6,8 @@ genanki>=0.13.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 
-# Audio TTS
-gTTS>=2.4.0
+# Audio TTS (Microsoft Edge TTS - better Japanese pronunciation)
+edge-tts>=6.1.0
 
 # Optional: Better HTML parsing
 lxml>=4.9.0
