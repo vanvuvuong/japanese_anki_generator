@@ -9,6 +9,9 @@ requests>=2.31.0
 # Audio TTS (Microsoft Edge TTS - better Japanese pronunciation)
 edge-tts>=6.1.0
 
+# Furigana for sentences
+pykakasi>=2.2.0
+
 # Optional: Better HTML parsing
 lxml>=4.9.0
 

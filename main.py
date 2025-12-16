@@ -647,7 +647,7 @@ class StrokeOrderAPI:
 
     @staticmethod
     def _add_stroke_numbers(svg_content: str) -> str:
-        """Clean and simplify SVG for Anki display"""
+        """Clean and simplify SVG for Anki display with dark mode support"""
         import re
 
         # Remove XML declaration and comments
@@ -657,6 +657,11 @@ class StrokeOrderAPI:
         # Remove problematic attributes and elements
         svg_content = re.sub(r'xmlns:kvg="[^"]*"', '', svg_content)
         svg_content = re.sub(r'kvg:[a-z]+="[^"]*"', '', svg_content)
+
+        # CRITICAL: Remove inline fill and stroke attributes for dark mode support
+        # This allows CSS to control the colors
+        svg_content = re.sub(r'\s+fill="[^"]*"', '', svg_content)
+        svg_content = re.sub(r'\s+stroke="[^"]*"', '', svg_content)
 
         # Keep only essential SVG content
         svg_match = re.search(r'(<svg[^>]*>.*</svg>)', svg_content, re.DOTALL)
@@ -888,6 +893,52 @@ class FuriganaGenerator:
 
         # For compound words, wrap entire word (safe fallback)
         return f'<ruby>{word}<rt>{reading}</rt></ruby>'
+
+
+class SentenceFuriganaGenerator:
+    """Generate furigana for Japanese sentences using pykakasi"""
+
+    _kakasi = None
+
+    @classmethod
+    def _init_kakasi(cls):
+        """Initialize pykakasi (lazy loading)"""
+        if cls._kakasi is None:
+            try:
+                import pykakasi
+                cls._kakasi = pykakasi.kakasi()
+            except ImportError:
+                print("Warning: pykakasi not installed. Run: pip install pykakasi --break-system-packages")
+                cls._kakasi = False
+
+    @classmethod
+    def generate(cls, sentence: str) -> str:
+        """Generate furigana HTML for a sentence"""
+        cls._init_kakasi()
+
+        if cls._kakasi is False or not sentence:
+            return sentence
+
+        try:
+            result = cls._kakasi.convert(sentence)
+            html_parts = []
+
+            for item in result:
+                orig = item['orig']
+                hira = item['hira']
+
+                # Check if has kanji
+                has_kanji = any('\u4e00' <= c <= '\u9fff' for c in orig)
+
+                if has_kanji and orig != hira:
+                    html_parts.append(f'<ruby>{orig}<rt>{hira}</rt></ruby>')
+                else:
+                    html_parts.append(orig)
+
+            return ''.join(html_parts)
+        except Exception as e:
+            # Fallback to original sentence
+            return sentence
 
 
 # =============================================================================
@@ -1215,13 +1266,46 @@ class AnkiDeckGenerator:
 
         # CSS styling
         css = '''
+/* Reset và box-sizing */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+    margin: 0;
+    padding: 0;
+}
+
+/* Hide scrollbar but allow scrolling */
+html, body, .card {
+    scrollbar-width: none;           /* Firefox */
+    -ms-overflow-style: none;        /* IE/Edge */
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.card::-webkit-scrollbar {
+    display: none;                   /* Chrome/Safari/Opera */
+    width: 0;
+    height: 0;
+}
+
 .card {
     font-family: "Noto Sans JP", "Yu Gothic", "Hiragino Sans", sans-serif;
     font-size: 20px;
     text-align: center;
     color: #333;
     background-color: #fafafa;
-    padding: 20px;
+    padding: 15px;
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+    margin: 0 auto;
 }
 
 .word {
@@ -1269,23 +1353,41 @@ class AnkiDeckGenerator:
 }
 
 .pitch-diagram {
-    margin: 15px auto;
+    margin: 10px auto;
     display: block;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.pitch-diagram svg {
+    max-width: 100%;
+    height: auto;
 }
 
 .stroke-order {
-    margin: 15px auto;
-    max-width: 200px;
+    margin: 10px auto;
+    max-width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 5px;
+}
+
+.stroke-order::-webkit-scrollbar {
+    display: none;
 }
 
 .example {
     font-size: 16px;
     color: #555;
     text-align: left;
-    margin: 10px 20px;
+    margin: 10px 5px;
     padding: 10px;
     background: #ecf0f1;
     border-radius: 5px;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .radical {
@@ -1303,11 +1405,13 @@ class AnkiDeckGenerator:
 
 .kanji-detail {
     text-align: left;
-    margin: 15px 10px;
+    margin: 10px 5px;
     padding: 10px;
     background: #f8f9fa;
     border-left: 3px solid #9b59b6;
     border-radius: 5px;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .kanji-detail-title {
@@ -1350,6 +1454,13 @@ class AnkiDeckGenerator:
     stroke: #333;
     stroke-width: 3;
     fill: none;
+    max-width: 100px;
+    height: auto;
+}
+
+.stroke-svg path {
+    stroke: #333;
+    fill: none;
 }
 
 .stroke-svg text {
@@ -1360,6 +1471,11 @@ class AnkiDeckGenerator:
 
 .night_mode .stroke-svg {
     stroke: #e0e0e0;
+}
+
+.night_mode .stroke-svg path {
+    stroke: #e0e0e0;
+    fill: none;
 }
 
 .night_mode .stroke-svg text {
@@ -1481,6 +1597,8 @@ ruby rt {
     padding: 8px;
     background: #e8f6f3;
     border-radius: 5px;
+    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .night_mode .conjugations {
@@ -1732,6 +1850,15 @@ hr {
         if entry.audio_file and os.path.exists(entry.audio_file):
             self.media_files.append(entry.audio_file)
 
+            # Track example audio files (inline in entry.examples)
+            if entry.examples:
+                import re
+                examples_dir = Path(entry.audio_file).parent.parent / "examples"
+                for match in re.findall(r'\[sound:([^\]]+)\]', entry.examples):
+                    audio_path = examples_dir / match
+                    if audio_path.exists():
+                        self.media_files.append(str(audio_path))
+
     def export(self, output_path: str):
         """Export all decks to a single .apkg file"""
         # Create package with all decks
@@ -1753,8 +1880,18 @@ class JapaneseVocabPipeline:
         self.epub_path = epub_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Split audio into words and examples folders
         self.audio_dir = self.output_dir / "audio"
         self.audio_dir.mkdir(exist_ok=True)
+        self.words_audio_dir = self.audio_dir / "words"
+        self.words_audio_dir.mkdir(exist_ok=True)
+        self.examples_audio_dir = self.audio_dir / "examples"
+        self.examples_audio_dir.mkdir(exist_ok=True)
+
+        # Migrate old audio files from audio/ to audio/words/
+        self._migrate_old_audio()
+
         self.stroke_dir = self.output_dir / "stroke_cache"
         self.stroke_dir.mkdir(exist_ok=True)
 
@@ -1773,6 +1910,8 @@ class JapaneseVocabPipeline:
             'chapters': 0,
             'audio_generated': 0,
             'audio_cached': 0,
+            'example_audio_generated': 0,
+            'example_audio_cached': 0,
             'stroke_generated': 0,
             'stroke_cached': 0,
             'pitch_found': 0,
@@ -1780,6 +1919,20 @@ class JapaneseVocabPipeline:
             'chiettu_found': 0,
             'skipped_cached': 0,
         }
+
+    def _migrate_old_audio(self):
+        """Migrate old audio files from audio/ root to audio/words/"""
+        import shutil
+        migrated = 0
+        for mp3_file in self.audio_dir.glob("*.mp3"):
+            # Only move files in root audio/, not in subfolders
+            if mp3_file.parent == self.audio_dir:
+                dest = self.words_audio_dir / mp3_file.name
+                if not dest.exists():
+                    shutil.move(str(mp3_file), str(dest))
+                    migrated += 1
+        if migrated > 0:
+            print(f"Migrated {migrated} audio files to audio/words/")
 
     def _load_checkpoint(self):
         """Load processed entries from checkpoint"""
@@ -1890,8 +2043,10 @@ class JapaneseVocabPipeline:
         print("=" * 60)
         print(f"Total chapters: {self.stats['chapters']}")
         print(f"Total words processed: {self.stats['total_words']}")
-        print(f"Audio generated: {self.stats['audio_generated']}")
-        print(f"Audio cached (skipped): {self.stats['audio_cached']}")
+        print(f"Word audio generated: {self.stats['audio_generated']}")
+        print(f"Word audio cached: {self.stats['audio_cached']}")
+        print(f"Example audio generated: {self.stats['example_audio_generated']}")
+        print(f"Example audio cached: {self.stats['example_audio_cached']}")
         print(f"Stroke generated: {self.stats['stroke_generated']}")
         print(f"Stroke cached (skipped): {self.stats['stroke_cached']}")
         print(f"Pitch patterns found: {self.stats['pitch_found']}")
@@ -1990,14 +2145,52 @@ class JapaneseVocabPipeline:
 
         # === END NEW ENRICHMENTS ===
 
-        # Example sentences - offline mode skips API fallback
+        # Example sentences - with furigana and inline audio
         if self.generate_example:
             examples = ExampleSentencesDB.get_examples(entry.word, limit=2, offline=self.offline)
             if ExampleSentencesDB.last_api_called:
                 self._last_api_called = True
                 api_calls.append('EX')
             if examples:
-                entry.examples = "<br>".join(examples)
+                import re
+                examples_final = []
+                example_audio_generated = False
+
+                for i, ex in enumerate(examples):
+                    if '→' in ex:
+                        jp_part, vi_part = ex.split('→', 1)
+                        jp_part = jp_part.strip()
+                        vi_part = vi_part.strip()
+
+                        # Add furigana
+                        jp_with_ruby = SentenceFuriganaGenerator.generate(jp_part)
+
+                        # Generate audio for this sentence (inline at end)
+                        audio_tag = ""
+                        if generate_audio and not self.offline:
+                            ex_hash = hashlib.md5(f"{entry.word}_{i}_{jp_part}".encode()).hexdigest()[:10]
+                            ex_audio_filename = f"ex_{ex_hash}.mp3"
+                            ex_audio_path = self.examples_audio_dir / ex_audio_filename
+
+                            if ex_audio_path.exists():
+                                audio_tag = f" [sound:{ex_audio_filename}]"
+                                self.stats['example_audio_cached'] += 1
+                            else:
+                                if TTSGenerator.generate_audio(jp_part, str(ex_audio_path)):
+                                    audio_tag = f" [sound:{ex_audio_filename}]"
+                                    self.stats['example_audio_generated'] += 1
+                                    example_audio_generated = True
+
+                        # Combine: Japanese (with ruby) → Vietnamese [audio]
+                        examples_final.append(f"{jp_with_ruby} → {vi_part}{audio_tag}")
+                    else:
+                        examples_final.append(ex)
+
+                entry.examples = "<br>".join(examples_final)
+
+                if example_audio_generated:
+                    self._last_api_called = True
+                    api_calls.append('EX_AUDIO')
 
         # English meaning (API call) - skip in offline mode
         if enrich_english and not self.offline:
@@ -2056,10 +2249,10 @@ class JapaneseVocabPipeline:
             if stroke_svgs:
                 entry.stroke_order_svg = ''.join(stroke_svgs)
 
-        # Audio - check if already exists
+        # Audio for word - check if already exists
         if generate_audio:
             audio_filename = f"{hashlib.md5(entry.word.encode()).hexdigest()[:8]}.mp3"
-            audio_path = self.audio_dir / audio_filename
+            audio_path = self.words_audio_dir / audio_filename
 
             if audio_path.exists():
                 # Audio already exists, skip generation
@@ -2077,7 +2270,17 @@ class JapaneseVocabPipeline:
             if api_calls:
                 print(f" [API: {','.join(api_calls)}]")
             else:
-                print(f" [cached]")
+                # Show cached details
+                cached_items = []
+                if entry.audio_file:
+                    cached_items.append('audio')
+                if entry.meaning_en:
+                    cached_items.append('en')
+                if entry.pitch_pattern:
+                    cached_items.append('pitch')
+                if entry.examples:
+                    cached_items.append('ex')
+                print(f" [cached: {','.join(cached_items) if cached_items else 'all'}]")
 
 
 # =============================================================================
