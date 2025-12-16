@@ -90,11 +90,10 @@ class VocabEntry:
     antonyms: str = ""                 # Opposite words
 
     def generate_takoboto_link(self):
-        """Generate Takoboto dictionary link - Android app intent with web fallback"""
+        """Generate Takoboto dictionary link - web URL that opens app if installed"""
         encoded = urllib.parse.quote(self.word)
-        web_url = urllib.parse.quote(f"https://takoboto.jp/?q={encoded}", safe='')
-        # Android intent: open Takoboto app first, fallback to web
-        self.takoboto_link = f"intent:#Intent;package=jp.takoboto;action=jp.takoboto.SEARCH;S.query={encoded};S.browser_fallback_url={web_url};end"
+        # Simple web URL - Android will offer to open in Takoboto app if installed
+        self.takoboto_link = f"https://takoboto.jp/?q={encoded}"
         return self.takoboto_link
 
 
