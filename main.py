@@ -90,9 +90,11 @@ class VocabEntry:
     antonyms: str = ""                 # Opposite words
 
     def generate_takoboto_link(self):
-        """Generate Takoboto dictionary link"""
+        """Generate Takoboto dictionary link - Android app intent with web fallback"""
         encoded = urllib.parse.quote(self.word)
-        self.takoboto_link = f"https://takoboto.jp/?q={encoded}"
+        web_url = urllib.parse.quote(f"https://takoboto.jp/?q={encoded}", safe='')
+        # Android intent: open Takoboto app first, fallback to web
+        self.takoboto_link = f"intent:#Intent;package=jp.takoboto;action=jp.takoboto.SEARCH;S.query={encoded};S.browser_fallback_url={web_url};end"
         return self.takoboto_link
 
 
@@ -1480,6 +1482,36 @@ body::-webkit-scrollbar,
 
 .night_mode .stroke-svg text {
     fill: #64b5f6;
+}
+
+/* Night mode - main text elements */
+.night_mode .word {
+    color: #f5f5f5;
+}
+
+.night_mode .reading {
+    color: #b0b0b0;
+}
+
+.night_mode .romaji {
+    color: #b0bec5;
+}
+
+.night_mode ruby rt {
+    color: #b0b0b0;
+}
+
+/* Night mode - pitch diagram */
+.night_mode .pitch-diagram svg text {
+    fill: #e0e0e0;
+}
+
+.night_mode .pitch-diagram svg .pitch-line {
+    stroke: #ff7043;
+}
+
+.night_mode .pitch-diagram svg .pitch-dot {
+    fill: #ff7043;
 }
 
 .night_mode .kanji-detail {
