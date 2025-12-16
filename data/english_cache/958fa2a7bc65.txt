@@ -1,0 +1,1 @@
+mouse; rat; dark gray; slate gray

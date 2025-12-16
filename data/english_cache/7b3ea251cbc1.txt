@@ -1,0 +1,1 @@
+hill; height; knoll; bonus points awarded to the winner at the end of a game

@@ -1,0 +1,1 @@
+square (shape); square (open space)

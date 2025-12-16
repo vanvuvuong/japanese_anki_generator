@@ -1,0 +1,1 @@
+musical note; note symbol; phonetic symbol (incl. the kanji and kana-doubling symbols, vowel-lengthening symbol, etc.)
