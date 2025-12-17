@@ -447,6 +447,23 @@ class JishoAPI:
         return meaning
 
     @classmethod
+    def get_reading(cls, word: str) -> str:
+        """Get correct reading (furigana) from Jisho"""
+        data = cls.lookup(word)
+        if not data:
+            return ""
+
+        japanese = data.get("japanese", [])
+        for jp in japanese:
+            if jp.get("word") == word or jp.get("reading") == word:
+                return jp.get("reading", "")
+
+        if japanese and "reading" in japanese[0]:
+            return japanese[0]["reading"]
+
+        return ""
+
+    @classmethod
     def get_word_type(cls, word: str) -> str:
         """Get part of speech from Jisho. Returns formatted string."""
         data = cls.lookup(word)
@@ -496,7 +513,7 @@ class JishoAPI:
 
     @classmethod
     def get_synonyms_antonyms(cls, word: str) -> Tuple[str, str]:
-        """Get synonyms and antonyms from Jisho. Returns (synonyms, antonyms)."""
+        """Get synonyms and antonyms from Jisho with furigana. Returns (synonyms, antonyms)."""
         data = cls.lookup(word)
         if not data or "senses" not in data:
             return "", ""
@@ -513,7 +530,68 @@ class JishoAPI:
             ant = sense.get("antonyms", [])
             antonyms.extend(ant[:3])
 
-        return " • ".join(synonyms[:4]), " • ".join(antonyms[:4])
+        # Add furigana to each word
+        syn_with_ruby = [SentenceFuriganaGenerator.generate(s) for s in synonyms[:4]]
+        ant_with_ruby = [SentenceFuriganaGenerator.generate(a) for a in antonyms[:4]]
+
+        return " • ".join(syn_with_ruby), " • ".join(ant_with_ruby)
+
+
+class KanjiAPI:
+    """KanjiAPI.dev for accurate kun/on readings"""
+
+    BASE_URL = "https://kanjiapi.dev/v1/kanji"
+    _cache_dir: Path = None
+    last_api_called: bool = False
+
+    @classmethod
+    def _init_cache(cls):
+        if cls._cache_dir is None:
+            cls._cache_dir = Path(__file__).parent / "data" / "kanji_api_cache"
+            cls._cache_dir.mkdir(exist_ok=True)
+
+    @classmethod
+    def lookup(cls, kanji: str, use_cache: bool = True) -> Dict:
+        """Look up a single kanji character"""
+        cls._init_cache()
+        cls.last_api_called = False
+
+        if len(kanji) != 1:
+            return {}
+
+        cache_file = cls._cache_dir / f"{ord(kanji)}.json"
+
+        if use_cache and cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except:
+                pass
+
+        cls.last_api_called = True
+        try:
+            url = f"{cls.BASE_URL}/{urllib.parse.quote(kanji)}"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                except:
+                    pass
+                return data
+        except Exception as e:
+            print(f"KanjiAPI error for {kanji}: {e}")
+
+        return {}
+
+    @classmethod
+    def get_readings(cls, kanji: str) -> Tuple[List[str], List[str]]:
+        """Get kun and on readings for a kanji"""
+        data = cls.lookup(kanji)
+        kun = data.get("kun_readings", [])
+        on = data.get("on_readings", [])
+        return kun, on
 
 
 class PitchAccentAPI:
@@ -1317,23 +1395,24 @@ class VerbConjugator:
     def format_conjugations(
         cls, word: str, reading: str = "", word_type: str = ""
     ) -> str:
-        """Format conjugations as HTML string"""
+        """Format conjugations as HTML string with furigana"""
         conj = cls.conjugate(word, reading, word_type)
         if not conj:
             return ""
 
         parts = []
         labels = {
-            "masu": "ます形",
-            "te": "て形",
-            "ta": "た形",
-            "nai": "ない形",
-            "potential": "可能形",
+            "masu": "Lịch sự",
+            "te": "Thể て",
+            "ta": "Quá khứ",
+            "nai": "Phủ định",
+            "potential": "Khả năng",
         }
         for key in ["masu", "te", "ta", "nai", "potential"]:
             if key in conj:
-                parts.append(f"{labels[key]}: {conj[key]}")
-
+                # Add furigana to conjugated form
+                conj_with_ruby = SentenceFuriganaGenerator.generate(conj[key])
+                parts.append(f"{labels[key]}: {conj_with_ruby}")
         return " | ".join(parts)
 
 
@@ -1946,7 +2025,7 @@ hr {
     <div class="meaning meaning-vi">🇻🇳 {{MeaningVI}}</div>
     {{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
     {{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
-    {{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+    {{#HanViet}}<div class="hanviet">Hán Việt: {{HanViet}}</div>{{/HanViet}}
     {{#FrequencyInfo}}<div class="frequency-info">Tần suất: {{FrequencyInfo}}</div>{{/FrequencyInfo}}
     {{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
     {{#Synonyms}}<div class="synonyms">≈ Đồng nghĩa: {{Synonyms}}</div>{{/Synonyms}}
@@ -1955,8 +2034,8 @@ hr {
     <div class="kanji-detail-separator"></div>
     <div class="kanji-detail-title">📚 Chiết tự Hán</div>
     {{#KanjiPinyin}}<div class="kanji-pinyin">🔊 Pinyin: {{KanjiPinyin}}</div>{{/KanjiPinyin}}
-    {{#KanjiKun}}<div class="kanji-reading">訓: {{KanjiKun}}</div>{{/KanjiKun}}
-    {{#KanjiOn}}<div class="kanji-reading">音: {{KanjiOn}}</div>{{/KanjiOn}}
+    {{#KanjiKun}}<div class="kanji-reading">Kun: {{KanjiKun}}</div>{{/KanjiKun}}
+    {{#KanjiOn}}<div class="kanji-reading">On: {{KanjiOn}}</div>{{/KanjiOn}}
     {{#KanjiTuGhep}}<div class="kanji-compound">📝 Từ ghép: {{KanjiTuGhep}}</div>{{/KanjiTuGhep}}
     <div class="kanji-etymology">{{KanjiChiTiet}}</div>
     {{/KanjiChiTiet}}
@@ -2004,7 +2083,7 @@ hr {
 {{#Audio}}{{Audio}}{{/Audio}}
 
 {{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
-{{#HanViet}}<div class="hanviet">漢越: {{HanViet}}</div>{{/HanViet}}
+{{#HanViet}}<div class="hanviet">Hán Việt: {{HanViet}}</div>{{/HanViet}}
 {{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
 
 <div class="dictionary-link">
@@ -2082,34 +2161,33 @@ hr {
         note = genanki.Note(
             model=self.model,
             fields=[
-                entry.word,
-                entry.reading,
-                entry.romaji,
-                entry.meaning_vi,
-                entry.meaning_en,
-                entry.han_viet,
-                entry.pitch_pattern,
-                entry.pitch_svg,
-                entry.stroke_order_svg,
+                entry.word or "",
+                entry.reading or "",
+                entry.romaji or "",
+                entry.meaning_vi or "",
+                entry.meaning_en or "",
+                entry.han_viet or "",
+                entry.pitch_pattern or "",
+                entry.pitch_svg or "",
+                entry.stroke_order_svg or "",
                 f"[sound:{Path(entry.audio_file).name}]" if entry.audio_file else "",
-                entry.examples,
-                entry.radical_info,
-                entry.frequency_info,
-                entry.kanji_pinyin,
-                entry.kanji_kun,
-                entry.kanji_on,
-                entry.kanji_tu_ghep,
-                entry.kanji_chi_tiet,
-                entry.chapter,
-                entry.sub_category,
-                entry.takoboto_link,
-                # New fields
-                entry.jlpt_level,
-                entry.word_type,
-                entry.furigana,
-                entry.conjugations,
-                entry.synonyms,
-                entry.antonyms,
+                entry.examples or "",
+                entry.radical_info or "",
+                entry.frequency_info or "",
+                entry.kanji_pinyin or "",
+                entry.kanji_kun or "",
+                entry.kanji_on or "",
+                entry.kanji_tu_ghep or "",
+                entry.kanji_chi_tiet or "",
+                entry.chapter or "",
+                entry.sub_category or "",
+                entry.takoboto_link or "",
+                entry.jlpt_level or "",
+                entry.word_type or "",
+                entry.furigana or "",
+                entry.conjugations or "",
+                entry.synonyms or "",
+                entry.antonyms or "",
             ],
             tags=tags,
         )
@@ -2350,7 +2428,12 @@ class JapaneseVocabPipeline:
 
         self._last_api_called = False
         api_calls = []
-
+        # === VALIDATE READING FROM JISHO ===
+        jisho_reading = JishoAPI.get_reading(entry.word)
+        if jisho_reading and jisho_reading != entry.reading:
+            if self.verbose:
+                print(f"      [FIX] {entry.word}: {entry.reading} → {jisho_reading}")
+            entry.reading = jisho_reading
         if self.verbose:
             print(f"      → {entry.word} ({entry.reading})", end="")
 
@@ -2366,18 +2449,34 @@ class JapaneseVocabPipeline:
         if kanji_info["pinyin"]:
             entry.kanji_pinyin = ", ".join(kanji_info["pinyin"])
 
-        # Kun/On readings
-        if kanji_info["kun"]:
-            entry.kanji_kun = " | ".join(kanji_info["kun"])
-        if kanji_info["on"]:
-            entry.kanji_on = " | ".join(kanji_info["on"])
+        # Kun/On readings - ưu tiên KanjiAPI, fallback local
+        first_kanji = next((c for c in entry.word if "\u4e00" <= c <= "\u9fff"), None)
+        if first_kanji:
+            kun_api, on_api = KanjiAPI.get_readings(first_kanji)
+            if kun_api or on_api:
+                if kun_api:
+                    entry.kanji_kun = " | ".join(kun_api)
+                if on_api:
+                    entry.kanji_on = " | ".join(on_api)
+            else:
+                # Fallback to local database
+                if kanji_info["kun"]:
+                    entry.kanji_kun = " | ".join(kanji_info["kun"])
+                if kanji_info["on"]:
+                    entry.kanji_on = " | ".join(kanji_info["on"])
 
         # Từ ghép (compound words)
         if kanji_info["tu_ghep"]:
             tu_ghep_html = []
             for tg in kanji_info["tu_ghep"][:4]:
                 if isinstance(tg, dict):
-                    tu_ghep_html.append(f"{tg.get('viet', '')} {tg.get('han', '')}")
+                    han_part = tg.get("han", "")
+                    viet_part = tg.get("viet", "")
+                    # Add furigana to Japanese part
+                    han_with_ruby = (
+                        SentenceFuriganaGenerator.generate(han_part) if han_part else ""
+                    )
+                    tu_ghep_html.append(f"{viet_part} {han_with_ruby}")
                 else:
                     tu_ghep_html.append(str(tg))
             entry.kanji_tu_ghep = " • ".join(tu_ghep_html)
