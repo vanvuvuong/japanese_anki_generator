@@ -17,3 +17,5 @@ lxml>=4.9.0
 
 # Optional: Progress bar
 tqdm>=4.66.0
+
+jamdict>=0.1a11.post2

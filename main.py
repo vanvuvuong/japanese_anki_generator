@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import hashlib
+import unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple, Any
@@ -945,41 +946,230 @@ class HanVietDB:
 
 
 class RadicalDB:
-    """48 most common radicals database - loads from JSON"""
+    """214 Kangxi radicals database with jamdict integration"""
 
-    RADICALS: Dict[str, Dict] = {}
+    RADICALS: List[Dict] = []
+    RADICAL_BY_SYMBOL: Dict[str, Dict] = {}
+    RADICAL_BY_VARIANT: Dict[str, Dict] = {}
+    _jamdict = None
+    _jamdict_cache: Dict[str, List[str]] = {}  # kanji -> [normalized components]
+    _cache_path: Path = None
     _loaded = False
 
     @classmethod
     def _load(cls):
-        """Load data from JSON file"""
+        """Load data from radicals.py and initialize jamdict"""
         if cls._loaded:
             return
 
-        json_path = Path(__file__).parent / "data" / "radicals.json"
-        if json_path.exists():
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                data.pop("_comment", None)
-                cls.RADICALS = data
+        # Load Vietnamese meanings and importance data
+        try:
+            from data.radicals import RADICALS_DATA
+
+            cls.RADICALS = RADICALS_DATA
+
+            for rad in cls.RADICALS:
+                cls.RADICAL_BY_SYMBOL[rad["symbol"]] = rad
+                for var in rad["variants"]:
+                    cls.RADICAL_BY_VARIANT[var] = rad
+        except ImportError:
+            # Fallback to old JSON if new file not available
+            json_path = Path(__file__).parent / "data" / "radicals.json"
+            if json_path.exists():
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    data.pop("_comment", None)
+                    for symbol, info in data.items():
+                        rad = {
+                            "symbol": symbol,
+                            "variants": info.get("variants", []),
+                            "meaning_vn": info.get("name_vn", ""),
+                            "meaning_en": info.get("name_en", ""),
+                            "frequency": 50,
+                            "joyo_freq": 0,
+                        }
+                        cls.RADICALS.append(rad)
+                        cls.RADICAL_BY_SYMBOL[symbol] = rad
+                        for var in rad["variants"]:
+                            cls.RADICAL_BY_VARIANT[var] = rad
+
+        # Load jamdict cache
+        cls._cache_path = Path(__file__).parent / "data" / "jamdict_cache.json"
+        if cls._cache_path.exists():
+            try:
+                with open(cls._cache_path, "r", encoding="utf-8") as f:
+                    cls._jamdict_cache = json.load(f)
+            except:
+                cls._jamdict_cache = {}
+
+        # Initialize jamdict for accurate radical lookup
+        try:
+            from jamdict import Jamdict
+
+            cls._jamdict = Jamdict()
+        except ImportError:
+            print("Warning: jamdict not installed, using fallback radical detection")
+            cls._jamdict = None
+
         cls._loaded = True
 
-    @staticmethod
-    def identify_radical(kanji: str) -> Dict:
-        """Identify the radical of a kanji"""
-        RadicalDB._load()
+    @classmethod
+    def _save_cache(cls):
+        """Save jamdict cache to disk"""
+        if cls._cache_path and cls._jamdict_cache:
+            try:
+                with open(cls._cache_path, "w", encoding="utf-8") as f:
+                    json.dump(cls._jamdict_cache, f, ensure_ascii=False, indent=2)
+            except:
+                pass
 
-        if kanji in RadicalDB.RADICALS:
-            return RadicalDB.RADICALS[kanji]
+    @classmethod
+    def _get_components(cls, kanji: str) -> List[str]:
+        """Get normalized components for a kanji (cached)"""
+        cls._load()
 
-        for radical, info in RadicalDB.RADICALS.items():
-            if radical in kanji:
-                return {**info, "radical": radical}
-            for variant in info.get("variants", []):
-                if variant in kanji:
-                    return {**info, "radical": radical}
+        # Check cache first
+        if kanji in cls._jamdict_cache:
+            return cls._jamdict_cache[kanji]
+
+        # Query jamdict
+        components = []
+        if cls._jamdict:
+            try:
+                result = cls._jamdict.lookup(kanji)
+                if result.chars:
+                    raw_comps = result.chars[0].components or []
+                    components = [unicodedata.normalize("NFKC", c) for c in raw_comps]
+                    # Cache it
+                    cls._jamdict_cache[kanji] = components
+            except:
+                pass
+
+        return components
+
+    @classmethod
+    def get_importance_label(cls, frequency: int, joyo_freq: int) -> str:
+        """Determine importance based on frequency data"""
+        if joyo_freq and joyo_freq > 0:
+            return "⭐ Thiết yếu"
+        elif frequency >= 500:
+            return "🔥 Rất phổ biến"
+        elif frequency >= 200:
+            return "📌 Phổ biến"
+        elif frequency >= 50:
+            return "📖 Thường gặp"
+        else:
+            return "📝 Ít gặp"
+
+    @classmethod
+    def identify_radical(cls, kanji: str) -> Dict:
+        """Identify the main radical of a kanji using jamdict"""
+        cls._load()
+
+        # First check if kanji itself is a radical
+        if kanji in cls.RADICAL_BY_SYMBOL:
+            rad = cls.RADICAL_BY_SYMBOL[kanji]
+            return {"radical": kanji, **rad}
+
+        # Use jamdict for accurate radical lookup
+        if cls._jamdict:
+            try:
+                result = cls._jamdict.lookup(kanji)
+                if result.chars:
+                    char_info = result.chars[0]
+
+                    # Parse radical string like "水-water[sc:4]"
+                    rad_str = str(char_info.radical) if char_info.radical else ""
+                    if rad_str and "-" in rad_str:
+                        jamdict_radical = rad_str.split("-")[0]  # e.g., "水", "辵"
+                        # Normalize components using NFKC (fixes CJK Compatibility chars)
+                        raw_components = char_info.components or []
+                        components = [
+                            unicodedata.normalize("NFKC", c) for c in raw_components
+                        ]
+
+                        # Step 1: Find our database entry for this radical
+                        db_radical = None
+                        db_rad_info = None
+
+                        # Check if jamdict_radical is directly in our symbols
+                        if jamdict_radical in cls.RADICAL_BY_SYMBOL:
+                            db_radical = jamdict_radical
+                            db_rad_info = cls.RADICAL_BY_SYMBOL[jamdict_radical]
+                        # Or if jamdict_radical is one of our variants (e.g., 辵 -> ⻌)
+                        elif jamdict_radical in cls.RADICAL_BY_VARIANT:
+                            db_rad_info = cls.RADICAL_BY_VARIANT[jamdict_radical]
+                            db_radical = db_rad_info["symbol"]
+
+                        if db_rad_info:
+                            # Step 2: Find which form is actually used in the kanji
+                            # Prioritize variant if found (e.g., 氵 over 水)
+                            variant_used = None
+                            for var in db_rad_info.get("variants", []):
+                                if var in components:
+                                    variant_used = var
+                                    break
+
+                            result_dict = {"radical": db_radical, **db_rad_info}
+                            if variant_used:
+                                result_dict["found_as"] = variant_used
+                            return result_dict
+            except Exception as e:
+                pass  # Fall through to fallback
+
+        # Fallback: check if any radical/variant is substring
+        for variant, rad in cls.RADICAL_BY_VARIANT.items():
+            if variant in kanji:
+                return {"radical": rad["symbol"], "found_as": variant, **rad}
+
+        for symbol, rad in cls.RADICAL_BY_SYMBOL.items():
+            if symbol in kanji and symbol != kanji:
+                return {"radical": symbol, **rad}
 
         return {}
+
+    @classmethod
+    def identify_all_radicals(cls, kanji: str) -> List[Dict]:
+        """Identify ALL component radicals of a kanji (not just main radical)"""
+        cls._load()
+
+        results = []
+        seen_symbols = set()
+
+        # If kanji itself is a radical
+        if kanji in cls.RADICAL_BY_SYMBOL:
+            rad = cls.RADICAL_BY_SYMBOL[kanji]
+            return [{"radical": kanji, **rad}]
+
+        # Get components (cached)
+        components = cls._get_components(kanji)
+
+        if components:
+            # Check each component against our radical database
+            for comp in components:
+                # Check if component is a radical symbol
+                if comp in cls.RADICAL_BY_SYMBOL:
+                    rad = cls.RADICAL_BY_SYMBOL[comp]
+                    if rad["symbol"] not in seen_symbols:
+                        seen_symbols.add(rad["symbol"])
+                        results.append({"radical": comp, **rad})
+                # Check if component is a variant
+                elif comp in cls.RADICAL_BY_VARIANT:
+                    rad = cls.RADICAL_BY_VARIANT[comp]
+                    if rad["symbol"] not in seen_symbols:
+                        seen_symbols.add(rad["symbol"])
+                        results.append(
+                            {"radical": rad["symbol"], "found_as": comp, **rad}
+                        )
+
+            if results:
+                return results
+
+        # Fallback to main radical only
+        main_rad = cls.identify_radical(kanji)
+        if main_rad:
+            return [main_rad]
+        return []
 
 
 class KanjiFrequencyDB:
@@ -1710,9 +1900,13 @@ body::-webkit-scrollbar,
 }
 
 .radical {
-    font-size: 14px;
-    color: #9b59b6;
-    margin: 10px 0;
+    font-size: 15px;
+    color: #8e44ad;
+    margin: 8px 0 12px 0;
+    padding: 8px 12px;
+    background: linear-gradient(135deg, #f5eef8 0%, #ebdef0 100%);
+    border-radius: 8px;
+    border-left: 3px solid #9b59b6;
 }
 
 .origin {
@@ -1868,6 +2062,8 @@ body::-webkit-scrollbar,
 
 .night_mode .radical {
     color: #ce93d8;
+    background: linear-gradient(135deg, #2d2d3d 0%, #3d3050 100%);
+    border-left: 3px solid #ce93d8;
 }
 
 /* Frequency tier badges */
@@ -2026,6 +2222,7 @@ hr {
     {{#MeaningEN}}<div class="meaning meaning-en">🇬🇧 {{MeaningEN}}</div>{{/MeaningEN}}
     {{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
     {{#HanViet}}<div class="hanviet">Hán Việt: {{HanViet}}</div>{{/HanViet}}
+    {{#RadicalInfo}}<div class="radical">🔠 Bộ thủ: {{RadicalInfo}}</div>{{/RadicalInfo}}
     {{#FrequencyInfo}}<div class="frequency-info">Tần suất: {{FrequencyInfo}}</div>{{/FrequencyInfo}}
     {{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
     {{#Synonyms}}<div class="synonyms">≈ Đồng nghĩa: {{Synonyms}}</div>{{/Synonyms}}
@@ -2045,10 +2242,6 @@ hr {
 <hr>
 <div class="stroke-order">{{StrokeOrder}}</div>
 {{/StrokeOrder}}
-
-{{#RadicalInfo}}
-<div class="radical">Bộ thủ: {{RadicalInfo}}</div>
-{{/RadicalInfo}}
 
 {{#Examples}}
 <hr>
@@ -2084,6 +2277,7 @@ hr {
 
 {{#WordType}}<div class="word-type">📗 {{WordType}}</div>{{/WordType}}
 {{#HanViet}}<div class="hanviet">Hán Việt: {{HanViet}}</div>{{/HanViet}}
+{{#RadicalInfo}}<div class="radical">🔠 Bộ thủ: {{RadicalInfo}}</div>{{/RadicalInfo}}
 {{#Conjugations}}<div class="conjugations">🔄 {{Conjugations}}</div>{{/Conjugations}}
 
 <div class="dictionary-link">
@@ -2312,6 +2506,8 @@ class JapaneseVocabPipeline:
                     ensure_ascii=False,
                     indent=2,
                 )
+            # Also save RadicalDB jamdict cache
+            RadicalDB._save_cache()
         except Exception as e:
             print(f"Warning: Could not save checkpoint: {e}")
 
@@ -2486,12 +2682,36 @@ class JapaneseVocabPipeline:
             entry.kanji_chi_tiet = "<br><br>".join(kanji_info["chi_tiet"][:2])
             self.stats["chiettu_found"] += 1
 
-        # Radical info
+        # Radical info - collect ALL component radicals from each kanji
+        radical_parts = []
+        seen_radicals = set()
         for char in entry.word:
-            radical_info = RadicalDB.identify_radical(char)
-            if radical_info:
-                entry.radical_info = f"{radical_info.get('radical', char)} ({radical_info.get('name_vn', '')} - {radical_info.get('name_en', '')})"
-                break
+            if "\u4e00" <= char <= "\u9fff":  # Is kanji
+                # Get all radicals for this kanji
+                all_radicals = RadicalDB.identify_all_radicals(char)
+                for radical_info in all_radicals:
+                    if radical_info and radical_info.get("symbol") not in seen_radicals:
+                        seen_radicals.add(radical_info.get("symbol"))
+                        # Format: 心 (忄) • tim, tâm [⭐ Thiết yếu]
+                        rad_symbol = radical_info.get("symbol", "")
+                        found_as = radical_info.get("found_as", "")
+                        meaning_vn = radical_info.get("meaning_vn", "")
+                        freq = radical_info.get("frequency", 0)
+                        joyo = radical_info.get("joyo_freq", 0)
+                        importance = RadicalDB.get_importance_label(freq, joyo)
+
+                        # Show variant if different from main symbol
+                        if found_as and found_as != rad_symbol:
+                            radical_parts.append(
+                                f"{rad_symbol} ({found_as}) • {meaning_vn} [{importance}]"
+                            )
+                        else:
+                            radical_parts.append(
+                                f"{rad_symbol} • {meaning_vn} [{importance}]"
+                            )
+
+        if radical_parts:
+            entry.radical_info = " | ".join(radical_parts[:4])  # Max 4 radicals
 
         # Frequency info - handle compound words (each kanji)
         freq_parts = []
