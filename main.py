@@ -1242,6 +1242,19 @@ class JLPTDB:
 class FuriganaGenerator:
     """Generate HTML ruby text for furigana display - O(n)"""
 
+    _kakasi = None
+
+    @classmethod
+    def _init_kakasi(cls):
+        """Initialize pykakasi (lazy loading)"""
+        if cls._kakasi is None:
+            try:
+                import pykakasi
+
+                cls._kakasi = pykakasi.kakasi()
+            except ImportError:
+                cls._kakasi = False
+
     @staticmethod
     def _is_kanji(c: str) -> bool:
         return "\u4e00" <= c <= "\u9fff"
@@ -1254,20 +1267,104 @@ class FuriganaGenerator:
     def _is_katakana(c: str) -> bool:
         return "\u30a0" <= c <= "\u30ff"
 
-    @staticmethod
-    def generate(word: str, reading: str) -> str:
+    @classmethod
+    def _get_full_reading(cls, word: str) -> str:
+        """Get full hiragana reading for a word using pykakasi"""
+        cls._init_kakasi()
+        if cls._kakasi is False:
+            return ""
+
+        try:
+            result = cls._kakasi.convert(word)
+            return "".join(item["hira"] for item in result)
+        except:
+            return ""
+
+    @classmethod
+    def _katakana_to_hiragana(cls, text: str) -> str:
+        """Convert katakana to hiragana for comparison"""
+        result = []
+        for c in text:
+            if cls._is_katakana(c):
+                # Katakana to hiragana: subtract 0x60
+                result.append(chr(ord(c) - 0x60))
+            else:
+                result.append(c)
+        return "".join(result)
+
+    @classmethod
+    def _validate_reading(cls, word: str, reading: str) -> str:
+        """Validate and fix reading if it doesn't match word properly.
+
+        Problems this fixes:
+        - あなたの猫 with reading あなた → should be あなたのねこ
+        - スポーツ用品店 with reading スポーツ → should be スポーツようひんてん
+        """
+        if not word or not reading:
+            return reading
+
+        # Count kana in word vs reading
+        word_kanji = sum(1 for c in word if cls._is_kanji(c))
+
+        # If word has kanji but reading might be incomplete
+        if word_kanji > 0:
+            # Get full reading using pykakasi
+            full_reading = cls._get_full_reading(word)
+
+            if full_reading:
+                # Normalize for comparison (katakana → hiragana)
+                reading_normalized = cls._katakana_to_hiragana(reading)
+
+                # Check if current reading is just a prefix of full reading
+                if len(full_reading) > len(reading_normalized) + 1:
+                    # Reading is likely incomplete
+                    # Try to preserve original katakana if present in word
+
+                    # Find katakana prefix in word
+                    kata_prefix = ""
+                    for c in word:
+                        if cls._is_katakana(c) or c in "ー":
+                            kata_prefix += c
+                        else:
+                            break
+
+                    if kata_prefix:
+                        # Replace hiragana prefix with original katakana
+                        kata_len = len(kata_prefix)
+                        return kata_prefix + full_reading[kata_len:]
+
+                    return full_reading
+
+                # Check if reading doesn't contain the kana parts of word
+                word_hiragana_only = "".join(c for c in word if cls._is_hiragana(c))
+                if word_hiragana_only and word_hiragana_only not in reading_normalized:
+                    return full_reading
+
+        return reading
+
+    @classmethod
+    def generate(cls, word: str, reading: str) -> str:
         """Generate furigana HTML. Returns <ruby>漢字<rt>かんじ</rt></ruby>
 
         Handles mixed kanji/hiragana like 閉める → <ruby>閉<rt>し</rt></ruby>める
         """
         # If word is all hiragana/katakana, no furigana needed
-        has_kanji = any(FuriganaGenerator._is_kanji(c) for c in word)
+        has_kanji = any(cls._is_kanji(c) for c in word)
         if not has_kanji:
             return word
+
+        # Validate and fix reading if needed
+        reading = cls._validate_reading(word, reading)
 
         # If reading equals word (already kana), no furigana needed
         if word == reading:
             return word
+
+        # If reading is empty after validation, try to get it
+        if not reading:
+            reading = cls._get_full_reading(word)
+            if not reading:
+                return word
 
         # Try to intelligently split kanji and kana parts
         # Pattern: find trailing kana in word that matches trailing kana in reading
@@ -1275,7 +1372,7 @@ class FuriganaGenerator:
         # Find trailing hiragana/katakana in word
         trailing_kana = ""
         for c in reversed(word):
-            if FuriganaGenerator._is_hiragana(c) or FuriganaGenerator._is_katakana(c):
+            if cls._is_hiragana(c) or cls._is_katakana(c):
                 trailing_kana = c + trailing_kana
             else:
                 break
@@ -1283,7 +1380,7 @@ class FuriganaGenerator:
         # Find leading hiragana/katakana in word
         leading_kana = ""
         for c in word:
-            if FuriganaGenerator._is_hiragana(c) or FuriganaGenerator._is_katakana(c):
+            if cls._is_hiragana(c) or cls._is_katakana(c):
                 leading_kana += c
             else:
                 break
@@ -1308,6 +1405,11 @@ class FuriganaGenerator:
         if leading_kana and kanji_reading.startswith(leading_kana):
             kanji_reading = kanji_reading[len(leading_kana) :]
 
+        # Validate: kanji_reading should not be empty if we have kanji
+        if not kanji_reading and kanji_part:
+            # Fallback: wrap entire word
+            return f"<ruby>{word}<rt>{reading}</rt></ruby>"
+
         # Build result
         result = ""
         if leading_kana:
@@ -1323,11 +1425,10 @@ class FuriganaGenerator:
 
         return result
 
-    @staticmethod
-    def generate_per_char(word: str, reading: str) -> str:
+    @classmethod
+    def generate_per_char(cls, word: str, reading: str) -> str:
         """Try to generate per-character furigana (best effort)"""
-        # This is a simplified version - full implementation would need MeCab
-        has_kanji = any(FuriganaGenerator._is_kanji(c) for c in word)
+        has_kanji = any(cls._is_kanji(c) for c in word)
         if not has_kanji:
             return word
 
@@ -1336,7 +1437,7 @@ class FuriganaGenerator:
             return f"<ruby>{word}<rt>{reading}</rt></ruby>"
 
         # Use smart generate for mixed words
-        return FuriganaGenerator.generate(word, reading)
+        return cls.generate(word, reading)
 
 
 class SentenceFuriganaGenerator:
@@ -1708,12 +1809,21 @@ class ExampleSentencesDB:
         cls._load()
         cls.last_api_called = False
 
-        # Try variations for suru verbs: 失敗する → also try 失敗
+        # Build search variations
         search_words = [word]
+
+        # For suru verbs: 失敗する → also try 失敗
         if word.endswith("する"):
-            search_words.append(word[:-2])  # Without する
+            search_words.append(word[:-2])
         elif word.endswith("す"):
-            search_words.append(word[:-1])  # Without す (potential form)
+            search_words.append(word[:-1])
+
+        # For Katakana words: add hiragana version
+        # コンピューター → こんぴゅーたー
+        if cls._is_katakana_word(word):
+            hiragana = cls._katakana_to_hiragana(word)
+            if hiragana and hiragana != word:
+                search_words.append(hiragana)
 
         for search_word in search_words:
             if search_word in cls.SENTENCES:
@@ -1760,6 +1870,30 @@ class ExampleSentencesDB:
                 pass
 
         return examples
+
+    @staticmethod
+    def _is_katakana_word(word: str) -> bool:
+        """Check if word is primarily Katakana"""
+        if not word:
+            return False
+        katakana_count = sum(1 for c in word if "\u30a1" <= c <= "\u30f6" or c == "ー")
+        return katakana_count > len(word) * 0.5
+
+    @staticmethod
+    def _katakana_to_hiragana(text: str) -> str:
+        """Convert Katakana to Hiragana"""
+        result = []
+        for c in text:
+            # Standard Katakana (ァ-ヶ): U+30A1 to U+30F6
+            if "\u30a1" <= c <= "\u30f6":
+                # Katakana to Hiragana: subtract 0x60
+                result.append(chr(ord(c) - 0x60))
+            elif c == "ー":
+                # Long vowel mark - keep as is or use hiragana equivalent
+                result.append("ー")
+            else:
+                result.append(c)
+        return "".join(result)
 
     @classmethod
     def _fetch_tatoeba(cls, word: str, limit: int = 2) -> List[str]:
@@ -2782,6 +2916,19 @@ class JapaneseVocabPipeline:
             if self.verbose:
                 print(f"      [FIX] {entry.word}: {entry.reading} → {jisho_reading}")
             entry.reading = jisho_reading
+
+        # === VALIDATE READING COMPLETENESS ===
+        # Fix incomplete readings like あなた for あなたの猫 → あなたのねこ
+        validated_reading = FuriganaGenerator._validate_reading(
+            entry.word, entry.reading
+        )
+        if validated_reading and validated_reading != entry.reading:
+            if self.verbose:
+                print(
+                    f"      [FIX-READING] {entry.word}: {entry.reading} → {validated_reading}"
+                )
+            entry.reading = validated_reading
+
         if self.verbose:
             print(f"      → {entry.word} ({entry.reading})", end="")
 
