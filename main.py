@@ -1243,22 +1243,91 @@ class FuriganaGenerator:
     """Generate HTML ruby text for furigana display - O(n)"""
 
     @staticmethod
+    def _is_kanji(c: str) -> bool:
+        return "\u4e00" <= c <= "\u9fff"
+
+    @staticmethod
+    def _is_hiragana(c: str) -> bool:
+        return "\u3040" <= c <= "\u309f"
+
+    @staticmethod
+    def _is_katakana(c: str) -> bool:
+        return "\u30a0" <= c <= "\u30ff"
+
+    @staticmethod
     def generate(word: str, reading: str) -> str:
-        """Generate furigana HTML. Returns <ruby>漢字<rt>かんじ</rt></ruby>"""
+        """Generate furigana HTML. Returns <ruby>漢字<rt>かんじ</rt></ruby>
+
+        Handles mixed kanji/hiragana like 閉める → <ruby>閉<rt>し</rt></ruby>める
+        """
         # If word is all hiragana/katakana, no furigana needed
-        has_kanji = any("\u4e00" <= c <= "\u9fff" for c in word)
+        has_kanji = any(FuriganaGenerator._is_kanji(c) for c in word)
         if not has_kanji:
             return word
 
-        # Simple case: wrap entire word
-        # For complex cases with mixed kanji/kana, we'd need morphological analysis
-        return f"<ruby>{word}<rt>{reading}</rt></ruby>"
+        # If reading equals word (already kana), no furigana needed
+        if word == reading:
+            return word
+
+        # Try to intelligently split kanji and kana parts
+        # Pattern: find trailing kana in word that matches trailing kana in reading
+
+        # Find trailing hiragana/katakana in word
+        trailing_kana = ""
+        for c in reversed(word):
+            if FuriganaGenerator._is_hiragana(c) or FuriganaGenerator._is_katakana(c):
+                trailing_kana = c + trailing_kana
+            else:
+                break
+
+        # Find leading hiragana/katakana in word
+        leading_kana = ""
+        for c in word:
+            if FuriganaGenerator._is_hiragana(c) or FuriganaGenerator._is_katakana(c):
+                leading_kana += c
+            else:
+                break
+
+        # Extract kanji part
+        kanji_start = len(leading_kana)
+        kanji_end = len(word) - len(trailing_kana) if trailing_kana else len(word)
+        kanji_part = word[kanji_start:kanji_end]
+
+        # If no kanji part found, return word as-is
+        if not kanji_part:
+            return word
+
+        # Match reading: remove trailing kana from reading to get kanji reading
+        kanji_reading = reading
+
+        # Remove trailing kana from reading if it matches word's trailing kana
+        if trailing_kana and kanji_reading.endswith(trailing_kana):
+            kanji_reading = kanji_reading[: -len(trailing_kana)]
+
+        # Remove leading kana from reading if it matches word's leading kana
+        if leading_kana and kanji_reading.startswith(leading_kana):
+            kanji_reading = kanji_reading[len(leading_kana) :]
+
+        # Build result
+        result = ""
+        if leading_kana:
+            result += leading_kana
+
+        if kanji_part and kanji_reading:
+            result += f"<ruby>{kanji_part}<rt>{kanji_reading}</rt></ruby>"
+        elif kanji_part:
+            result += kanji_part
+
+        if trailing_kana:
+            result += trailing_kana
+
+        return result
 
     @staticmethod
     def generate_per_char(word: str, reading: str) -> str:
         """Try to generate per-character furigana (best effort)"""
         # This is a simplified version - full implementation would need MeCab
-        has_kanji = any("\u4e00" <= c <= "\u9fff" for c in word)
+        has_kanji = any(FuriganaGenerator._is_kanji(c) for c in word)
         if not has_kanji:
             return word
 
@@ -1266,8 +1335,8 @@ class FuriganaGenerator:
         if len(word) == 1:
             return f"<ruby>{word}<rt>{reading}</rt></ruby>"
 
-        # For compound words, wrap entire word (safe fallback)
-        return f"<ruby>{word}<rt>{reading}</rt></ruby>"
+        # Use smart generate for mixed words
+        return FuriganaGenerator.generate(word, reading)
 
 
 class SentenceFuriganaGenerator:
@@ -1639,10 +1708,17 @@ class ExampleSentencesDB:
         cls._load()
         cls.last_api_called = False
 
-        if word in cls.SENTENCES:
-            examples = cls.SENTENCES[word][:limit]
-            # Format: "日本語 → Tiếng Việt"
-            return [f"{jp} → {vi}" for jp, vi in examples]
+        # Try variations for suru verbs: 失敗する → also try 失敗
+        search_words = [word]
+        if word.endswith("する"):
+            search_words.append(word[:-2])  # Without する
+        elif word.endswith("す"):
+            search_words.append(word[:-1])  # Without す (potential form)
+
+        for search_word in search_words:
+            if search_word in cls.SENTENCES:
+                examples = cls.SENTENCES[search_word][:limit]
+                return [f"{jp} → {vi}" for jp, vi in examples]
 
         # Check cache - use stable hash
         word_hash = hashlib.md5(word.encode()).hexdigest()[:12]
@@ -1651,7 +1727,8 @@ class ExampleSentencesDB:
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cached = json.load(f)
-                    return cached[:limit]
+                    if cached:  # Only return if not empty
+                        return cached[:limit]
             except:
                 pass
 
@@ -1659,9 +1736,20 @@ class ExampleSentencesDB:
         if offline:
             return []
 
-        # Fetch from Tatoeba API
+        # Fetch from APIs - try each variation
         cls.last_api_called = True
-        examples = cls._fetch_tatoeba(word, limit)
+        examples = []
+
+        for search_word in search_words:
+            # Try Tatoeba first
+            examples = cls._fetch_tatoeba(search_word, limit)
+            if examples:
+                break
+
+            # Try Jisho sentences as fallback
+            examples = cls._fetch_jisho_sentences(search_word, limit)
+            if examples:
+                break
 
         # Save to cache (including empty to avoid re-fetching)
         if cache_file:
@@ -1677,6 +1765,7 @@ class ExampleSentencesDB:
     def _fetch_tatoeba(cls, word: str, limit: int = 2) -> List[str]:
         """Fetch examples from Tatoeba API"""
         try:
+            # Try Vietnamese first
             url = f"https://tatoeba.org/en/api_v0/search?from=jpn&to=vie&query={urllib.parse.quote(word)}&limit={limit}"
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
@@ -1689,6 +1778,69 @@ class ExampleSentencesDB:
                         vi = translations[0][0].get("text", "")
                         if jp and vi:
                             results.append(f"{jp} → {vi}")
+                if results:
+                    return results
+
+            # Fallback to English if no Vietnamese
+            url = f"https://tatoeba.org/en/api_v0/search?from=jpn&to=eng&query={urllib.parse.quote(word)}&limit={limit}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for item in data.get("results", [])[:limit]:
+                    jp = item.get("text", "")
+                    translations = item.get("translations", [[]])
+                    if translations and translations[0]:
+                        en = translations[0][0].get("text", "")
+                        if jp and en:
+                            results.append(f"{jp} → {en}")
+                return results
+        except:
+            pass
+        return []
+
+    @classmethod
+    def _fetch_jisho_sentences(cls, word: str, limit: int = 2) -> List[str]:
+        """Fetch example sentences from Jisho.org by scraping"""
+        try:
+            url = f"https://jisho.org/search/{urllib.parse.quote(word)}%20%23sentences"
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; AnkiDeckGenerator/1.0)"}
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                results = []
+                html = response.text
+
+                # Simple regex extraction for sentence pairs
+                # Jisho format: Japanese sentence followed by English translation
+                import re
+
+                # Find sentence blocks
+                sentence_pattern = r'class="sentence_content"[^>]*>.*?<span class="text">([^<]+)</span>.*?<span class="english">([^<]+)</span>'
+                matches = re.findall(sentence_pattern, html, re.DOTALL)
+
+                for jp, en in matches[:limit]:
+                    jp = jp.strip()
+                    en = en.strip()
+                    if jp and en:
+                        results.append(f"{jp} → {en}")
+
+                # Alternative pattern if above doesn't work
+                if not results:
+                    # Look for Japanese text followed by English
+                    jp_pattern = r'<span class="japanese[^"]*"[^>]*>(.*?)</span>'
+                    en_pattern = r'<span class="english">(.*?)</span>'
+
+                    jp_matches = re.findall(jp_pattern, html)
+                    en_matches = re.findall(en_pattern, html)
+
+                    for jp, en in zip(jp_matches[:limit], en_matches[:limit]):
+                        # Clean HTML tags
+                        jp = re.sub(r"<[^>]+>", "", jp).strip()
+                        en = re.sub(r"<[^>]+>", "", en).strip()
+                        if jp and en:
+                            results.append(f"{jp} → {en}")
+
                 return results
         except:
             pass
@@ -2711,7 +2863,7 @@ class JapaneseVocabPipeline:
                             )
 
         if radical_parts:
-            entry.radical_info = " | ".join(radical_parts[:4])  # Max 4 radicals
+            entry.radical_info = " | ".join(radical_parts)  # Show all radicals
 
         # Frequency info - handle compound words (each kanji)
         freq_parts = []
