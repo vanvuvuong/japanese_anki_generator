@@ -1,1 +1,1 @@
-room
+_EMPTY_

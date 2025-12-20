@@ -1,1 +1,1 @@
-garage; carport; depot (for trains, buses, etc.); Garage (house)
+_EMPTY_

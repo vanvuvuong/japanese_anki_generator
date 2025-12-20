@@ -377,6 +377,22 @@ class JishoAPI:
             cls._jisho_cache_dir.mkdir(exist_ok=True)
 
     @classmethod
+    def _is_exact_match(cls, result: Dict, word: str) -> bool:
+        """Check if Jisho result is an exact match for the word"""
+        japanese = result.get("japanese", [])
+        for jp in japanese:
+            # Check word field
+            if jp.get("word") == word:
+                return True
+            # Check reading field (for kana-only words)
+            if jp.get("reading") == word:
+                return True
+        # Also check slug
+        if result.get("slug") == word:
+            return True
+        return False
+
+    @classmethod
     def lookup(cls, word: str, use_cache: bool = True) -> Dict:
         """Look up a word in Jisho with caching"""
         cls._init_cache()
@@ -400,14 +416,25 @@ class JishoAPI:
             if response.status_code == 200:
                 data = response.json()
                 if data.get("data"):
-                    result = data["data"][0]
-                    # Cache result
+                    # Find exact match first
+                    for result in data["data"]:
+                        if cls._is_exact_match(result, word):
+                            # Cache result
+                            try:
+                                with open(cache_file, "w", encoding="utf-8") as f:
+                                    json.dump(result, f, ensure_ascii=False)
+                            except:
+                                pass
+                            return result
+
+                    # No exact match found - cache empty result
+                    # Don't return partial match as it causes wrong meanings!
                     try:
                         with open(cache_file, "w", encoding="utf-8") as f:
-                            json.dump(result, f, ensure_ascii=False)
+                            json.dump({}, f)
                     except:
                         pass
-                    return result
+                    return {}
         except Exception as e:
             print(f"Jisho lookup error for {word}: {e}")
 
@@ -1299,46 +1326,59 @@ class FuriganaGenerator:
         Problems this fixes:
         - あなたの猫 with reading あなた → should be あなたのねこ
         - スポーツ用品店 with reading スポーツ → should be スポーツようひんてん
+
+        Does NOT override:
+        - 髭剃り器 with reading ひげそりき (even if pykakasi says うつわ)
         """
         if not word or not reading:
             return reading
 
-        # Count kana in word vs reading
+        # Count kana in word
         word_kanji = sum(1 for c in word if cls._is_kanji(c))
+        word_kana = sum(1 for c in word if cls._is_hiragana(c) or cls._is_katakana(c))
 
-        # If word has kanji but reading might be incomplete
-        if word_kanji > 0:
+        # If no kanji, no need to validate
+        if word_kanji == 0:
+            return reading
+
+        # Normalize reading for comparison
+        reading_normalized = cls._katakana_to_hiragana(reading)
+
+        # Check if kana parts of word are present in reading
+        # This indicates the reading is probably correct
+        word_kana_parts = "".join(c for c in word if cls._is_hiragana(c))
+        word_kana_parts_hira = cls._katakana_to_hiragana(
+            "".join(c for c in word if cls._is_hiragana(c) or cls._is_katakana(c))
+        )
+
+        # If all kana parts from word are in reading, it's likely correct
+        if word_kana_parts and word_kana_parts in reading_normalized:
+            return reading
+
+        # Expected reading length: at least 1 char per kanji + word's kana
+        min_expected_len = word_kanji + word_kana
+
+        # If reading is too short, it's likely incomplete
+        if len(reading_normalized) < min_expected_len:
             # Get full reading using pykakasi
             full_reading = cls._get_full_reading(word)
 
-            if full_reading:
-                # Normalize for comparison (katakana → hiragana)
-                reading_normalized = cls._katakana_to_hiragana(reading)
+            if full_reading and len(full_reading) > len(reading_normalized):
+                # Reading is incomplete - use full reading
+                # Try to preserve original katakana if present in word
+                kata_prefix = ""
+                for c in word:
+                    if cls._is_katakana(c) or c == "ー":
+                        kata_prefix += c
+                    else:
+                        break
 
-                # Check if current reading is just a prefix of full reading
-                if len(full_reading) > len(reading_normalized) + 1:
-                    # Reading is likely incomplete
-                    # Try to preserve original katakana if present in word
+                if kata_prefix:
+                    # Replace hiragana prefix with original katakana
+                    kata_len = len(kata_prefix)
+                    return kata_prefix + full_reading[kata_len:]
 
-                    # Find katakana prefix in word
-                    kata_prefix = ""
-                    for c in word:
-                        if cls._is_katakana(c) or c in "ー":
-                            kata_prefix += c
-                        else:
-                            break
-
-                    if kata_prefix:
-                        # Replace hiragana prefix with original katakana
-                        kata_len = len(kata_prefix)
-                        return kata_prefix + full_reading[kata_len:]
-
-                    return full_reading
-
-                # Check if reading doesn't contain the kana parts of word
-                word_hiragana_only = "".join(c for c in word if cls._is_hiragana(c))
-                if word_hiragana_only and word_hiragana_only not in reading_normalized:
-                    return full_reading
+                return full_reading
 
         return reading
 
@@ -1346,7 +1386,9 @@ class FuriganaGenerator:
     def generate(cls, word: str, reading: str) -> str:
         """Generate furigana HTML. Returns <ruby>漢字<rt>かんじ</rt></ruby>
 
-        Handles mixed kanji/hiragana like 閉める → <ruby>閉<rt>し</rt></ruby>める
+        Handles mixed kanji/hiragana/katakana like:
+        - 閉める → <ruby>閉<rt>し</rt></ruby>める
+        - 彼女のドレス → <ruby>彼女<rt>かのじょ</rt></ruby>のドレス
         """
         # If word is all hiragana/katakana, no furigana needed
         has_kanji = any(cls._is_kanji(c) for c in word)
@@ -1366,62 +1408,98 @@ class FuriganaGenerator:
             if not reading:
                 return word
 
-        # Try to intelligently split kanji and kana parts
-        # Pattern: find trailing kana in word that matches trailing kana in reading
+        # Segment word into blocks: kanji vs kana (hiragana/katakana)
+        segments = []  # List of (text, is_kanji)
+        current = ""
+        current_is_kanji = None
 
-        # Find trailing hiragana/katakana in word
-        trailing_kana = ""
-        for c in reversed(word):
-            if cls._is_hiragana(c) or cls._is_katakana(c):
-                trailing_kana = c + trailing_kana
-            else:
-                break
-
-        # Find leading hiragana/katakana in word
-        leading_kana = ""
         for c in word:
-            if cls._is_hiragana(c) or cls._is_katakana(c):
-                leading_kana += c
+            is_kanji = cls._is_kanji(c)
+            if current_is_kanji is None:
+                current_is_kanji = is_kanji
+
+            if is_kanji == current_is_kanji:
+                current += c
             else:
-                break
+                if current:
+                    segments.append((current, current_is_kanji))
+                current = c
+                current_is_kanji = is_kanji
 
-        # Extract kanji part
-        kanji_start = len(leading_kana)
-        kanji_end = len(word) - len(trailing_kana) if trailing_kana else len(word)
-        kanji_part = word[kanji_start:kanji_end]
+        if current:
+            segments.append((current, current_is_kanji))
 
-        # If no kanji part found, return word as-is
-        if not kanji_part:
-            return word
-
-        # Match reading: remove trailing kana from reading to get kanji reading
-        kanji_reading = reading
-
-        # Remove trailing kana from reading if it matches word's trailing kana
-        if trailing_kana and kanji_reading.endswith(trailing_kana):
-            kanji_reading = kanji_reading[: -len(trailing_kana)]
-
-        # Remove leading kana from reading if it matches word's leading kana
-        if leading_kana and kanji_reading.startswith(leading_kana):
-            kanji_reading = kanji_reading[len(leading_kana) :]
-
-        # Validate: kanji_reading should not be empty if we have kanji
-        if not kanji_reading and kanji_part:
-            # Fallback: wrap entire word
+        # If only one segment and it's all kanji, simple wrap
+        if len(segments) == 1 and segments[0][1]:
             return f"<ruby>{word}<rt>{reading}</rt></ruby>"
 
-        # Build result
+        # Try to match kana segments in reading to extract kanji readings
+        # Convert reading to hiragana for matching
+        reading_hira = cls._katakana_to_hiragana(reading)
+
+        # Build result by matching segments
         result = ""
-        if leading_kana:
-            result += leading_kana
+        reading_pos = 0
 
-        if kanji_part and kanji_reading:
-            result += f"<ruby>{kanji_part}<rt>{kanji_reading}</rt></ruby>"
-        elif kanji_part:
-            result += kanji_part
+        for i, (seg_text, is_kanji) in enumerate(segments):
+            if not is_kanji:
+                # This is a kana segment - find it in reading
+                seg_hira = cls._katakana_to_hiragana(seg_text)
 
-        if trailing_kana:
-            result += trailing_kana
+                # Find this kana in reading starting from current position
+                match_pos = reading_hira.find(seg_hira, reading_pos)
+
+                if match_pos != -1:
+                    # Extract kanji reading before this kana segment
+                    if match_pos > reading_pos:
+                        # There's kanji reading between current pos and match
+                        kanji_reading = reading[reading_pos:match_pos]
+
+                        # Find the kanji segment(s) before this kana
+                        # Look back for kanji segments that need this reading
+                        kanji_segments = []
+                        for j in range(i - 1, -1, -1):
+                            if segments[j][1]:  # is kanji
+                                kanji_segments.insert(0, segments[j][0])
+                            else:
+                                break
+
+                        if kanji_segments and kanji_reading:
+                            kanji_text = "".join(kanji_segments)
+                            # Remove already added kanji from result and re-add with ruby
+                            result = (
+                                result[: -len(kanji_text)]
+                                if result.endswith(kanji_text)
+                                else result
+                            )
+                            result += (
+                                f"<ruby>{kanji_text}<rt>{kanji_reading}</rt></ruby>"
+                            )
+
+                    # Add the kana segment as-is
+                    result += seg_text
+                    reading_pos = match_pos + len(seg_hira)
+                else:
+                    # Couldn't find match, just add segment
+                    result += seg_text
+            else:
+                # Kanji segment - will be processed when we hit next kana segment
+                result += seg_text
+
+        # Handle trailing kanji (no kana after it)
+        if segments and segments[-1][1]:  # Last segment is kanji
+            # Find remaining reading
+            if reading_pos < len(reading):
+                kanji_reading = reading[reading_pos:]
+                kanji_text = segments[-1][0]
+                # Remove the trailing kanji we added and re-add with ruby
+                if result.endswith(kanji_text):
+                    result = result[: -len(kanji_text)]
+                    result += f"<ruby>{kanji_text}<rt>{kanji_reading}</rt></ruby>"
+
+        # Fallback: if result looks wrong, use simple wrap
+        if not result or result == word:
+            return f"<ruby>{word}<rt>{reading}</rt></ruby>"
 
         return result
 
