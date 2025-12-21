@@ -1326,12 +1326,18 @@ class FuriganaGenerator:
         Problems this fixes:
         - あなたの猫 with reading あなた → should be あなたのねこ
         - スポーツ用品店 with reading スポーツ → should be スポーツようひんてん
+        - Reading with spaces: あなた の ねこ → あなたのねこ
 
         Does NOT override:
         - 髭剃り器 with reading ひげそりき (even if pykakasi says うつわ)
         """
         if not word or not reading:
             return reading
+
+        # Strip spaces from reading (EPUB sometimes has spaces)
+        reading = reading.replace(" ", "").replace(
+            "　", ""
+        )  # Half-width and full-width spaces
 
         # Count kana in word
         word_kanji = sum(1 for c in word if cls._is_kanji(c))
@@ -1523,6 +1529,18 @@ class SentenceFuriganaGenerator:
 
     _kakasi = None
 
+    # Common pykakasi misreadings to override
+    # pykakasi sometimes picks archaic/rare readings
+    READING_OVERRIDES = {
+        "彼": "かれ",  # pykakasi often reads as か (kano) instead of かれ (kare)
+        "彼女": "かのじょ",  # ensure correct reading
+        "何": "なに",  # sometimes read as なん
+        "私": "わたし",  # sometimes read as わたくし
+        "今日": "きょう",  # sometimes read as こんにち
+        "明日": "あした",  # sometimes read as あす/みょうにち
+        "昨日": "きのう",  # sometimes read as さくじつ
+    }
+
     @classmethod
     def _init_kakasi(cls):
         """Initialize pykakasi (lazy loading)"""
@@ -1557,6 +1575,19 @@ class SentenceFuriganaGenerator:
                 has_kanji = any("\u4e00" <= c <= "\u9fff" for c in orig)
 
                 if has_kanji and orig != hira:
+                    # Check for reading overrides
+                    # Extract just the kanji part for lookup
+                    kanji_only = "".join(c for c in orig if "\u4e00" <= c <= "\u9fff")
+
+                    if kanji_only in cls.READING_OVERRIDES:
+                        # Override the reading
+                        correct_reading = cls.READING_OVERRIDES[kanji_only]
+                        # Preserve any trailing kana from orig
+                        trailing_kana = "".join(
+                            c for c in orig if not ("\u4e00" <= c <= "\u9fff")
+                        )
+                        hira = correct_reading + trailing_kana
+
                     html_parts.append(f"<ruby>{orig}<rt>{hira}</rt></ruby>")
                 else:
                     html_parts.append(orig)
